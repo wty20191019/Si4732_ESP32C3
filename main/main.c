@@ -688,7 +688,7 @@ static void render_ui(const si4732_status_t *st)
     char line[28];
 
     /* ---------- 上区：大字频率 ---------- */
-    u8g2_SetFont(u, u8g2_font_10x20_tf);
+    u8g2_SetFont(u, u8g2_font_9x18_tf);
     format_freq_value(value, sizeof(value), st);
 
     const int w = (int)u8g2_GetStrWidth(u, value);
@@ -699,18 +699,25 @@ static void render_ui(const si4732_status_t *st)
     u8g2_DrawStr(u, (u8g2_uint_t)x, 20, value);
 
     if (s_field == FIELD_FREQ) {
-        u8g2_DrawFrame(u, 0, 0, OLED_WIDTH, 22);
         if (s_editing) {
+            /* 选中后：反白当前要调的那一位 */
             const int idx = freq_digit_index(st, step_hz_current());
-            int cx = x + idx * 10;
+            int cx = x + idx * 9;
             if (cx < 0) {
                 cx = 0;
-            } else if (cx > OLED_WIDTH - 10) {
-                cx = OLED_WIDTH - 10;
+            } else if (cx > OLED_WIDTH - 9) {
+                cx = OLED_WIDTH - 9;
             }
             u8g2_SetDrawColor(u, 2);
-            u8g2_DrawBox(u, (u8g2_uint_t)cx, 2, 10, 18);
+            u8g2_DrawBox(u, (u8g2_uint_t)cx, 2, 9, 18);
             u8g2_SetDrawColor(u, 1);
+        } else {
+            /* 选中前：用 < 指示 */
+            int mx = x - 9;
+            if (mx < 0) {
+                mx = 0;
+            }
+            u8g2_DrawStr(u, (u8g2_uint_t)mx, 20, "<");
         }
     }
 
@@ -746,6 +753,7 @@ static void render_ui(const si4732_status_t *st)
         for (int col = 0; col < 2; col++) {
             const field_t f = (col == 0) ? left_fields[row] : right_fields[row];
             const uint8_t x = (col == 0) ? 0 : 64;
+            const bool selected = (s_field == f);
             char cell[16];
 
             switch (f) {
@@ -757,7 +765,7 @@ static void render_ui(const si4732_status_t *st)
                          bw_text((uint8_t)si4732_ssb_get_bandwidth()));
                 break;
             case FIELD_BFO:
-                snprintf(cell, sizeof(cell), "BFO %+d", (int)st->bfo_hz);
+                snprintf(cell, sizeof(cell), "BFO%+d", (int)st->bfo_hz);
                 break;
             case FIELD_VOLUME:
                 snprintf(cell, sizeof(cell), "VOL  %u", (unsigned)st->volume);
@@ -770,10 +778,17 @@ static void render_ui(const si4732_status_t *st)
                 break;
             }
 
-            u8g2_DrawStr(u, x, y, cell);
+            if (selected && !s_editing) {
+                /* 选中前：< 标记，文字右移 6px */
+                u8g2_DrawStr(u, x, y, "<");
+                u8g2_DrawStr(u, (u8g2_uint_t)(x + 6), y, cell);
+            } else {
+                u8g2_DrawStr(u, x, y, cell);
+            }
 
-            if (s_field == f) {
-                u8g2_SetDrawColor(u, 2);   /* 反白选中的半屏单元格 */
+            if (selected && s_editing) {
+                /* 选中后：反白半屏单元格 */
+                u8g2_SetDrawColor(u, 2);
                 u8g2_DrawBox(u, x, (uint8_t)(y - 8), 64, 10);
                 u8g2_SetDrawColor(u, 1);
             }
