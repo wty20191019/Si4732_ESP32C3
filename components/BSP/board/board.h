@@ -28,9 +28,9 @@
 #define BOARD_I2C_SDA_GPIO      GPIO_NUM_1
 #define BOARD_I2C_SCL_GPIO      GPIO_NUM_2
 
-/* I2C 时钟：当前调试值 10kHz，用于排除长导线/上拉不足导致的信号完整性问题
- * 正常后改回 100kHz（Si4732 与 SSD1306 规格上限都是 400kHz） */
-#define BOARD_I2C_CLK_HZ        (10 * 1000)
+/* I2C 时钟：Si4732 与 SSD1306 规格上限都是 400kHz
+ * 400kHz 需要 SDA/SCL 各有 4.7k 外部上拉；长导线不稳定时再降到 100kHz */
+#define BOARD_I2C_CLK_HZ        (400 * 1000)
 
 /* ============================ Si4732 ============================ */
 #define BOARD_SI4732_GPO1_GPIO  GPIO_NUM_3      /* 调谐完成中断（下降沿） */

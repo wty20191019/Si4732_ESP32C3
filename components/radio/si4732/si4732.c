@@ -54,7 +54,7 @@ static const char *TAG = "SI4732";
 #define TUNE_STATUS_VALID       0x01    /* 调谐/搜台结果有效 */
 
 /* ============================ 时序参数 ============================ */
-#define SI4732_I2C_CLK_HZ           10000   /* 调试值：与总线一起降到 10kHz，正常后改回 100000 */
+#define SI4732_I2C_CLK_HZ           400000  /* 与总线一致，400kHz */
 #define SI4732_XFER_TIMEOUT_MS      50      /* 单次 I2C 传输超时 */
 #define SI4732_CTS_TIMEOUT_MS       1000    /* 等待 CTS 的超时（上电约需 110ms） */
 #define SI4732_TUNE_TIMEOUT_MS      2000    /* 等待调谐完成超时 */
