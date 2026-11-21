@@ -54,6 +54,7 @@ static const char *TAG = "SI4732";
 #define TUNE_STATUS_VALID       0x01    /* 调谐/搜台结果有效 */
 
 /* ============================ 时序参数 ============================ */
+#define SI4732_I2C_CLK_HZ           100000  /* Si4732 单独用 100kHz，长导线更稳（OLED 仍 400kHz） */
 #define SI4732_XFER_TIMEOUT_MS      50      /* 单次 I2C 传输超时 */
 #define SI4732_CTS_TIMEOUT_MS       1000    /* 等待 CTS 的超时（上电约需 110ms） */
 #define SI4732_TUNE_TIMEOUT_MS      2000    /* 等待调谐完成超时 */
@@ -64,10 +65,14 @@ static const char *TAG = "SI4732";
 #define SI4732_PATCH_DELAY_US       300     /* 每行之间的最小间隔（PU2CLR 取值） */
 #define SI4732_SSB_PATCH_DELAY_MS   50      /* 补丁 POWER_UP 后的稳定时间 */
 
-/* 时钟模式：false = 外部 RCLK（XOSCEN=0），true = 板载晶振（XOSCEN=1）。
- * 初始化时先按外部 RCLK 尝试，失败会自动切到晶振模式重试，
- * 兼容“模块自带 32.768kHz 晶振、RCLK 引脚未接线”的情况。 */
-static bool s_use_crystal = false;
+/* 模块是否自带 32.768kHz 晶振：
+ *   0 = 无晶振，由 ESP32 的 GPIO5 输出 RCLK（本工程硬件）
+ *   1 = 模块自带晶振，POWER_UP 使用 XOSCEN=1
+ * 无晶振时不要打开自动切换，否则每次失败都会白白多试一轮。 */
+#define SI4732_BOARD_HAS_CRYSTAL    0
+
+/* 时钟模式：false = 外部 RCLK（XOSCEN=0），true = 板载晶振（XOSCEN=1） */
+static bool s_use_crystal = (SI4732_BOARD_HAS_CRYSTAL != 0);
 
 /* ============================ 驱动内部状态 ============================ */
 static i2c_master_dev_handle_t s_dev = NULL;
@@ -87,6 +92,9 @@ static si4732_ssb_bandwidth_t s_ssb_bw = SI4732_SSB_BW_1K2;
 static const char *s_last_stage = "NONE";
 static esp_err_t s_last_error = ESP_OK;
 
+/* 引脚只需配置一次；重试初始化时重复 gpio_config 会打印 conflict 警告 */
+static bool s_gpio_configured = false;
+
 /* ============================ 底层 I2C ============================ */
 
 /* 把 Si4732 挂到 board_i2c 管理的共享总线上 */
@@ -102,9 +110,14 @@ static esp_err_t si4732_bus_attach(void)
     const i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = SI4732_I2C_ADDR,
-        .scl_speed_hz = BOARD_I2C_CLK_HZ,
+        .scl_speed_hz = SI4732_I2C_CLK_HZ,
     };
-    return i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
+    const esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "已挂载 I2C 设备 0x%02X @ %dkHz",
+                 SI4732_I2C_ADDR, SI4732_I2C_CLK_HZ / 1000);
+    }
+    return err;
 }
 
 /* 写一段命令（调用前必须持有 I2C 锁） */
@@ -341,7 +354,7 @@ static esp_err_t si4732_power_up(si4732_band_t band)
 {
     esp_err_t err = si4732_power_up_once(band, s_use_crystal);
 
-    if (err != ESP_OK) {
+    if (err != ESP_OK && SI4732_BOARD_HAS_CRYSTAL) {
         ESP_LOGW(TAG, "按%s时钟模式上电失败，改用%s模式重试",
                  s_use_crystal ? "板载晶振" : "外部 RCLK",
                  s_use_crystal ? "外部 RCLK" : "板载晶振");
@@ -359,7 +372,8 @@ static esp_err_t si4732_power_up(si4732_band_t band)
         ESP_LOGI(TAG, "时钟模式: %s",
                  s_use_crystal ? "板载晶振 XOSCEN=1" : "外部 RCLK 32.768kHz XOSCEN=0");
     } else {
-        ESP_LOGE(TAG, "外部 RCLK 与板载晶振两种模式都无法上电");
+        ESP_LOGE(TAG, "上电失败：芯片没有应答。请确认 GPIO5 已接到模块 RCLK、"
+                      "SENB 接 GND、VDD=3.3V、SDA/SCL 接线正确");
     }
     return err;
 }
@@ -853,27 +867,33 @@ esp_err_t si4732_init(void)
 {
     s_last_stage = "GPIO";
     s_last_error = ESP_OK;
-    /* RST：输出，默认高电平（正常工作） */
-    const gpio_config_t rst_cfg = {
-        .pin_bit_mask = 1ULL << BOARD_SI4732_RST_GPIO,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&rst_cfg), TAG, "配置 RST 引脚失败");
-    gpio_set_level(BOARD_SI4732_RST_GPIO, 1);
+    /* RST：输出，默认高电平（正常工作）
+     * 只在第一次初始化时配置，重试时重复 gpio_config 会触发
+     * "conflict found for GPIO[4]" 警告（只是提示，不影响功能） */
+    if (!s_gpio_configured) {
+        const gpio_config_t rst_cfg = {
+            .pin_bit_mask = 1ULL << BOARD_SI4732_RST_GPIO,
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        ESP_RETURN_ON_ERROR(gpio_config(&rst_cfg), TAG, "配置 RST 引脚失败");
+        gpio_set_level(BOARD_SI4732_RST_GPIO, 1);
 
-    /* GPO1：调谐完成中断输入，内部上拉
-     * TODO: 改为下降沿中断 + 信号量，替代 TUNE_STATUS 轮询 */
-    const gpio_config_t gpo_cfg = {
-        .pin_bit_mask = 1ULL << BOARD_SI4732_GPO1_GPIO,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&gpo_cfg), TAG, "配置 GPO1 引脚失败");
+        /* GPO1：调谐完成中断输入，内部上拉
+         * TODO: 改为下降沿中断 + 信号量，替代 TUNE_STATUS 轮询 */
+        const gpio_config_t gpo_cfg = {
+            .pin_bit_mask = 1ULL << BOARD_SI4732_GPO1_GPIO,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        ESP_RETURN_ON_ERROR(gpio_config(&gpo_cfg), TAG, "配置 GPO1 引脚失败");
+
+        s_gpio_configured = true;
+    }
 
     s_last_stage = "ATTACH";
     const esp_err_t attach_err = si4732_bus_attach();
