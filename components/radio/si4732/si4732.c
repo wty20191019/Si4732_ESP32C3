@@ -895,15 +895,20 @@ static esp_err_t si4732_apply_ssb_mode(void)
     const bool narrow = (s_ssb_bw == SI4732_SSB_BW_1K2 ||
                          s_ssb_bw == SI4732_SSB_BW_0K5 ||
                          s_ssb_bw == SI4732_SSB_BW_1K0);
-    const uint8_t byte_hi = (uint8_t)(((uint8_t)s_ssb_bw & 0x0F) |
-                                       (narrow ? 0x00 : 0x10));   /* SBCUTFLT */
-    const uint8_t byte_lo = (uint8_t)(0x00 |                      /* AVC_DIVIDER = 0 */
+
+    /* AN332 / PU2CLR 的字节顺序：
+     *   属性值高字节 = raw[1] = AVC_DIVIDER | AVCEN | SMUTESEL | DSP_AFCDIS
+     *   属性值低字节 = raw[0] = AUDIOBW | SBCUTFLT
+     * 之前写反了，芯片会收到错误的带宽/滤波器配置。 */
+    const uint8_t audio_byte = (uint8_t)(((uint8_t)s_ssb_bw & 0x0F) |
+                                         (narrow ? 0x00 : 0x10));   /* SBCUTFLT */
+    const uint8_t avc_byte = (uint8_t)(0x00 |                      /* AVC_DIVIDER = 0 */
                                        (0x00 << 4) |              /* AVCEN = 0 */
                                        (0x00 << 5) |              /* SMUTESEL = 0 */
                                        (0x01 << 7));              /* DSP_AFCDIS = 1 */
 
     return si4732_set_property(PROP_SSB_MODE,
-                               (uint16_t)(((uint16_t)byte_hi << 8) | byte_lo));
+                               (uint16_t)(((uint16_t)avc_byte << 8) | audio_byte));
 }
 
 esp_err_t si4732_ssb_enable(bool usb)
