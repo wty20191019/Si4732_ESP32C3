@@ -135,6 +135,9 @@ static void i2c_scan_report(void)
     }
     if (found == 0) {
         ESP_LOGW(TAG, "总线上没有设备，检查供电与 SDA/SCL 接线");
+    } else if (found > 100) {
+        ESP_LOGW(TAG, "扫描到 %u 个设备：SDA 可能被从机拉低或与 SCL 短路",
+                 (unsigned)found);
     }
 }
 
@@ -1054,6 +1057,11 @@ void app_main(void)
     if (board_i2c_init() != ESP_OK) {
         ESP_LOGE(TAG, "I2C 总线初始化失败");
     }
+
+    /* 2.1 先复位 Si4732：若上次 SSB 补丁失败让它进入 halt 并拉住 SDA，
+     *     复位后再扫描，避免把 0x09~0x77 全部误判成在线设备 */
+    (void)si4732_reset();
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     /* 3. 上电扫描一次，方便确认接线 */
     i2c_scan_report();

@@ -99,6 +99,9 @@ static esp_err_t s_last_error = ESP_OK;
 /* 引脚只需配置一次；重试初始化时重复 gpio_config 会打印 conflict 警告 */
 static bool s_gpio_configured = false;
 
+/* RST 引脚是否已配置为输出（重置流程也可能在 si4732_init 之前被调用） */
+static bool s_rst_gpio_ready = false;
+
 /* ============================ 底层 I2C ============================ */
 
 /* 把 Si4732 挂到 board_i2c 管理的共享总线上 */
@@ -317,6 +320,20 @@ static esp_err_t si4732_apply_band_config(si4732_band_t band)
 esp_err_t si4732_reset(void)
 {
     ESP_RETURN_ON_ERROR(si4732_bus_attach(), TAG, "挂载 I2C 设备失败");
+
+    /* 允许在 si4732_init() 之前单独调用（用于开机先释放被拉低的 SDA） */
+    if (!s_rst_gpio_ready) {
+        const gpio_config_t rst_cfg = {
+            .pin_bit_mask = 1ULL << BOARD_SI4732_RST_GPIO,
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_up_en = GPIO_PULLUP_DISABLE,
+            .pull_down_en = GPIO_PULLDOWN_DISABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        ESP_RETURN_ON_ERROR(gpio_config(&rst_cfg), TAG, "配置 RST 引脚失败");
+        s_rst_gpio_ready = true;
+    }
+    gpio_set_level(BOARD_SI4732_RST_GPIO, 1);
 
     /* AN332 第 6 节：芯片在 RST 上升沿采样 GPO1 / GPO2 选择总线模式：
      *   2-wire: GPO1 = 1, GPO2 = 0
@@ -1041,6 +1058,7 @@ esp_err_t si4732_init(void)
             .intr_type = GPIO_INTR_DISABLE,
         };
         ESP_RETURN_ON_ERROR(gpio_config(&rst_cfg), TAG, "配置 RST 引脚失败");
+        s_rst_gpio_ready = true;
         gpio_set_level(BOARD_SI4732_RST_GPIO, 1);
 
         /* GPO1：调谐完成中断输入，内部上拉
