@@ -385,6 +385,17 @@ static esp_err_t si4732_power_up_once(si4732_band_t band, bool crystal)
     ESP_RETURN_ON_ERROR(si4732_set_property(PROP_REFCLK_PRESCALE, 1),
                         TAG, "设置 REFCLK_PRESCALE 失败");
 
+    /* 回读确认芯片内部真的接受 32768Hz 参考时钟 */
+    uint16_t refclk_read = 0;
+    if (si4732_get_property(PROP_REFCLK_FREQ, &refclk_read) == ESP_OK) {
+        if (refclk_read != SI4732_REFCLK_HZ) {
+            ESP_LOGW(TAG, "REFCLK_FREQ 回读 = %u Hz（期望 %d Hz）",
+                     (unsigned)refclk_read, SI4732_REFCLK_HZ);
+        } else {
+            ESP_LOGI(TAG, "REFCLK_FREQ 回读 = %u Hz", (unsigned)refclk_read);
+        }
+    }
+
     /* 搜台范围必须跟着波段走，否则 SW/LW 会跑回 MW 默认范围 */
     ESP_RETURN_ON_ERROR(si4732_apply_band_config(band), TAG, "配置波段搜台参数失败");
 
