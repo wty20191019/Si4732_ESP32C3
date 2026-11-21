@@ -802,6 +802,14 @@ static esp_err_t si4732_query_library(bool xoscen)
     ESP_LOGI(TAG, "Library 查询响应: %02X %02X %02X %02X %02X %02X %02X %02X",
              resp[0], resp[1], resp[2], resp[3],
              resp[4], resp[5], resp[6], resp[7]);
+
+    /* RESP7 是 library ID：R11 = 0x0B，与 patch_full(0x9D29) 匹配 */
+    ESP_LOGI(TAG, "Library ID=0x%02X%s", resp[7],
+             (resp[7] == 0x0B) ? "（R11，与补丁匹配）" : "（注意：补丁要求 R11）");
+    if (resp[7] != 0x0B) {
+        ESP_LOGW(TAG, "库版本不是 R11，补丁可能不兼容");
+    }
+
     vTaskDelay(pdMS_TO_TICKS(5));
     return ESP_OK;
 }
