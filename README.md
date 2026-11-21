@@ -4,9 +4,9 @@
 工程结构从 ESP32-C3 传感器采集模板复制而来，已裁掉 IMU / 温湿度 / 气压计 /
 WiFi 网页 / CSV 日志等模块，替换为 Si4732 收音链路。
 
-> 当前阶段：**骨架 + 基础收音驱动**。
-> Si4732 驱动（复位、上电、REFCLK、调谐、搜台、音量、状态读取）已实现；
-> 应用层（OLED 页面、编码器交互、串口命令）是可用但精简的骨架，
+> 当前阶段：**骨架 + 基础收音 + SSB（USB/LSB）**。
+> Si4732 驱动（复位、上电、REFCLK、调谐、搜台、音量、状态读取、SSB 补丁）
+> 已实现；应用层（OLED 页面、编码器交互、串口命令）是可用但精简的骨架，
 > 后续按“待办路线”继续补功能。
 
 ## 硬件平台
@@ -62,7 +62,7 @@ Si4732-A10/
 │  │  ├─ i2c/                  # 共用 I2C 总线 + 互斥锁 + 扫描
 │  │  └─ oled/                 # 128×64 OLED（u8g2）
 │  ├─ radio/
-│  │  └─ si4732/               # Si4732 驱动（AN332 命令层）
+│  │  └─ si4732/               # Si4732 驱动（AN332 命令层 + SSB 补丁）
 │  ├─ filters/                 # 通用二阶低通（预留给 RSSI 平滑）
 │  └─ ui/                      # 通用步进选择器（预留）
 ├─ tools/gen_cpp_properties.ps1
@@ -113,9 +113,13 @@ idf.py -p COM20 flash monitor # Ctrl+] 退出
 | `s9700` | 短波 9700 kHz |
 | `l200` | 长波 200 kHz |
 | `fm` / `am` / `sw` / `lw` | 切换波段 |
+| `usb` / `lsb` | 进入 SSB 上边带 / 下边带（FM 时自动先切 SW） |
+| `ssb0` | 退出 SSB，回到普通 AM |
+| `bfo150` / `bfo-150` | 设置 BFO 偏移（Hz，范围 ±16383） |
+| `bw0` ~ `bw5` | SSB 音频带宽：1.2k / 2.2k / 3k / 4k / 500Hz / 1kHz |
 | `v` | 打印频率 / RSSI / SNR / 音量 |
 | `vol40` | 音量 0~63 |
-| `+` / `-` | 向上 / 向下搜台 |
+| `+` / `-` | 向上 / 向下搜台（SSB 下不支持） |
 | `h` | 帮助 |
 
 > 控制台主输出是 UART0（GPIO20/21），USB Serial/JTAG 作为副控制台。
@@ -123,9 +127,31 @@ idf.py -p COM20 flash monitor # Ctrl+] 退出
 
 ### 编码器操作
 
-- 旋转：调谐（步进按波段：FM 100 kHz、MW 10 kHz、SW 5 kHz、LW 3 kHz）或调音量
-- 短按：切换波段 FM → AM → SW → LW
-- 长按（1 秒）：切换“调谐 / 音量”模式，OLED 第三行显示 `TUNE` 或 `VOL`
+- 旋转：调谐（步进按波段：FM 100 kHz、MW 10 kHz、SW 5 kHz、LW 3 kHz；SSB 1 kHz）或调音量
+- 短按：切换波段 FM → AM → SW → LW（会退出 SSB）
+- 长按（1 秒）：循环切换 调谐 → 音量 → USB → LSB → 调谐
+- 进入 USB/LSB 时会自动切到 SW（若当前是 FM），首次进入需下载 SSB 补丁
+- OLED 第三行显示当前模式（`TUNE` / `VOL` / `USB` / `LSB`），第四行显示 BFO
+
+## SSB（USB/LSB）
+
+Si4732-A10 与 Si4735-D60 同 die，支持通过补丁开启 SSB：
+
+1. 首次进入 SSB 时，`si4732_ssb_enable()` 会：
+   - 以 **PATCH=1** 重新 POWER_UP
+   - 把 `components/radio/si4732/ssb_patch_init.h`（约 15 KB）按 8 字节一行、
+     每行间隔 300 µs 下载到芯片内部 RAM
+   - 写 `SSB_MODE`（带宽/边带滤波/AVC/AFC）和 `SSB_BFO`
+   - 按普通 AM 模式重新上电，然后以 `AM_TUNE_FREQ` 的 ARG1 边带位调谐
+2. 补丁保存在芯片 RAM，**掉电或复位后丢失**；切换 FM/AM 不需要重新下载
+3. 补丁下载约 0.4 秒（1200 行 × 300 µs），期间 UI 暂停刷新
+
+> **注意**：补丁内容来自 PU2CLR 库收录的 Vadim Afonkin 版本，仅建议个人实验使用，
+> 不要用于商业产品。若你的模块板载无源晶振而不是外部 RCLK，把
+> `SI4732_SSB_PATCH_XOSCEN` 改成 1（在 `si4732.c` 中）。
+
+SSB 只影响 AM 模式（MW/SW/LW），FM 下调用会返回错误；SSB 模式没有硬件搜台，
+`si4732_seek()` 会返回 `ESP_ERR_NOT_SUPPORTED`。
 
 ## Si4732 驱动 API（`components/radio/si4732/si4732.h`）
 
@@ -135,8 +161,13 @@ si4732_set_band(SI4732_BAND_SW);
 si4732_tune(9700);             // kHz
 si4732_seek(true);             // 向上搜台
 si4732_set_volume(40);         // 0~63
-si4732_get_status(&status);    // 频率 / RSSI / SNR / valid
+si4732_get_status(&status);    // 频率 / RSSI / SNR / SSB / valid
 si4732_set_property(prop, v);  // AN332 通用属性
+
+si4732_ssb_enable(true);        // 下载补丁并进入 USB（仅首次下载）
+si4732_ssb_set_bfo(-150);       // BFO 偏移 Hz
+si4732_ssb_set_bandwidth(SI4732_SSB_BW_2K2);
+si4732_ssb_disable();           // 回到普通 AM
 ```
 
 实现要点：
@@ -149,6 +180,10 @@ si4732_set_property(prop, v);  // AN332 通用属性
 6. `AM_TUNE_FREQ` / `AM_SEEK_START` 按 AN332 带满 6 字节，ANTCAP 在短波（>1800 kHz）时置 1
 7. 每次切换波段都会写入 seek 上下限与步进（FM 属性单位 10 kHz），避免 SW/LW 搜台跑回中波范围
 8. 音量与静音分离：`si4732_set_volume()` 只写 RX_VOLUME，静音用 `si4732_set_mute()`
+9. SSB 补丁：PATCH 模式上电 → 8 字节/行、300 µs 间隔下载 → 写 `SSB_MODE`/`SSB_BFO`
+   → 正常 AM 模式重新上电 → `AM_TUNE_FREQ` 的 ARG1[5:4] 选择边带（01=LSB，10=USB）
+10. `SSB_BFO` 是有符号 Hz，写成 16 位补码；`SSB_MODE` 高字节是
+    `AUDIOBW[3:0] | SBCUTFLT[7:4]`，低字节是 `AVC_DIVIDER/AVCEN/SMUTESEL/DSP_AFCDIS`
 
 ## 参考资料
 
@@ -177,7 +212,8 @@ si4732_set_property(prop, v);  // AN332 通用属性
 3. 若频率偏移：确认 GPIO5 有 32.768 kHz 波形、`REFCLK_FREQ` 设置为 32768
 4. 串口发 `f101100`，听扬声器是否有声音
 5. 切 `am` + `a1000` 测磁棒天线
-6. 最后再接编码器和 OLED 排查交互
+6. 发 `sw` + `s9700`，再发 `usb`/`lsb`，听 SSB 是否有啸叫/语音
+7. 最后再接编码器和 OLED 排查交互
 
 ## 常见问题
 
@@ -189,3 +225,5 @@ si4732_set_property(prop, v);  // AN332 通用属性
 | OLED 花屏 | I2C 速率过高，把 `BOARD_I2C_CLK_HZ` 降到 400k 以下 |
 | 上电直接进下载模式 | GPIO9（BOOT/编码器按键）上电瞬间被按住 |
 | 串口命令没反应 | 命令走 UART0（GPIO20/21），不是 USB |
+| SSB 没声音或啸叫 | 先用 `bfo150`/`bfo-150` 微调；确认在 SW/AM 波段；板载晶振模块要把 `SI4732_SSB_PATCH_XOSCEN` 改成 1 |
+| SSB 切换后频率偏移 | 补丁模式上电后没有重新写 `REFCLK_FREQ`，检查 RCLK 与 `si4732_patch_power_up()` |
