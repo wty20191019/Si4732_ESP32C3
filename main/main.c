@@ -11,7 +11,6 @@
 
 #include "driver/uart.h"
 #include "esp_log.h"
-#include "esp_system.h"
 #include "nvs_flash.h"
 #include "u8g2.h"
 
@@ -31,19 +30,19 @@ static const char *TAG = "app";
 #define UI_REDRAW_MS            50      /* 目标刷新间隔（受 I2C 带宽限制） */
 #define RADIO_POLL_MS           50      /* 状态轮询周期 */
 #define SETTINGS_SAVE_DELAY_MS  2000
-#define LED_TASK_PERIOD_MS      500
+#define LED_TASK_PERIOD_MS      5000   // LED 任务周期 5s
 #define RADIO_RETRY_MS          2000
 #define OLED_RETRY_MS           2000
 
-#define RADIO_TASK_PRIO         6
-#define UI_TASK_PRIO            3
-#define CONSOLE_TASK_PRIO       2
-#define LED_TASK_PRIO           1
+#define RADIO_TASK_PRIO         6 // 无线电任务优先级
+#define UI_TASK_PRIO            3 // UI 任务优先级
+#define CONSOLE_TASK_PRIO       2 // 控制台任务优先级
+#define LED_TASK_PRIO           1 // LED 任务优先级
 
 #define RADIO_TASK_STACK        4096
 #define UI_TASK_STACK           4096
 #define CONSOLE_TASK_STACK      4096
-#define LED_TASK_STACK          2048
+#define LED_TASK_STACK          2048 // LED 任务堆栈大小
 
 #define VOLUME_DEFAULT          30
 
