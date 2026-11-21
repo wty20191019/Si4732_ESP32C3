@@ -88,6 +88,10 @@ static bool s_ssb_usb = false;
 static int16_t s_bfo_hz = 0;
 static si4732_ssb_bandwidth_t s_ssb_bw = SI4732_SSB_BW_1K2;
 
+/* 调谐完成状态：STC 是一次性中断标志，读状态时可能已被清零，
+ * 所以单独保存“最近一次 tune/seek 是否成功完成”。 */
+static bool s_tuned = false;
+
 /* 最近一次初始化失败信息（OLED 直接显示，方便没有串口时排查） */
 static const char *s_last_stage = "NONE";
 static esp_err_t s_last_error = ESP_OK;
@@ -353,6 +357,7 @@ esp_err_t si4732_reset(void)
      * 不能再把 NACK 当失败——真正的握手由随后的 POWER_UP 完成。 */
     s_powered = false;
     s_ssb_active = false;
+    s_tuned = false;
     s_patch_loaded = false;
     return ESP_OK;
 }
@@ -433,6 +438,7 @@ esp_err_t si4732_power_down(void)
     const esp_err_t err = si4732_exec(cmd, sizeof(cmd), NULL, 0);
     s_powered = false;
     s_ssb_active = false;
+    s_tuned = false;
     return err;
 }
 
@@ -651,7 +657,12 @@ esp_err_t si4732_tune(uint32_t freq_khz)
     ESP_RETURN_ON_ERROR(si4732_exec(cmd, cmd_len, NULL, 0), TAG, "TUNE 命令失败");
 
     s_freq_khz = freq_khz;
-    return si4732_wait_tune_done(fm, NULL, NULL);
+    s_tuned = false;
+    const esp_err_t err = si4732_wait_tune_done(fm, NULL, NULL);
+    if (err == ESP_OK) {
+        s_tuned = true;
+    }
+    return err;
 }
 
 esp_err_t si4732_seek(bool up)
@@ -678,7 +689,12 @@ esp_err_t si4732_seek(bool up)
 
     ESP_RETURN_ON_ERROR(si4732_exec(cmd, cmd_len, NULL, 0), TAG, "SEEK 命令失败");
 
-    return si4732_wait_tune_done(fm, NULL, NULL);
+    s_tuned = false;
+    const esp_err_t err = si4732_wait_tune_done(fm, NULL, NULL);
+    if (err == ESP_OK) {
+        s_tuned = true;
+    }
+    return err;
 }
 
 /* ============================ 波段切换 ============================ */
@@ -901,11 +917,10 @@ esp_err_t si4732_get_status(si4732_status_t *out)
 {
     ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "out 不能为空");
 
-    bool stc = false;
     bool valid = false;
     uint8_t rssi = 0, snr = 0;
     ESP_RETURN_ON_ERROR(si4732_read_tune_status(si4732_band_is_fm(s_band), false,
-                                                &stc, &valid, &rssi, &snr),
+                                                NULL, &valid, &rssi, &snr),
                         TAG, "读取状态失败");
 
     out->band = s_band;
@@ -915,7 +930,7 @@ esp_err_t si4732_get_status(si4732_status_t *out)
     out->snr = snr;
     out->stereo = false;    /* TODO: 解析 FM_RSQ_STATUS 的 STEREO 位 */
     out->valid = valid;
-    out->tuned = stc;
+    out->tuned = s_tuned;
     out->ssb_active = s_ssb_active;
     out->ssb_usb = s_ssb_usb;
     out->bfo_hz = s_bfo_hz;
