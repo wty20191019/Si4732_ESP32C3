@@ -12,11 +12,15 @@ static const char *TAG = "RCLK";
 #define RCLK_LEDC_TIMER         LEDC_TIMER_1
 #define RCLK_LEDC_CHANNEL       LEDC_CHANNEL_1
 
-/* 32.768 kHz 方波：LEDC 的 1 位分辨率只有 0 和 1 两档，
- * duty = 1 即 50% 占空比。80MHz APB / 32768 / 2 = 1220.703125，
- * 分频器的小数部分可以精确表示，误差为 0。 */
+/* 32.768 kHz 方波：duty = 2/4 即 50% 占空比。
+ *
+ * 注意不能用 1 位分辨率：80MHz APB / 32768 / 2 = 1220.7，
+ * 对应 LEDC 的 Q8.8 分频值 312500，超过硬件上限 0x3FFFF(262143)，
+ * ledc_timer_config() 会直接返回错误。
+ * 用 2 位分辨率后分频值 = 80MHz / 32768 / 4 = 610.35，
+ * Q8.8 表示正好是 156250，频率误差为 0。 */
 #define RCLK_FREQ_HZ            32768
-#define RCLK_DUTY_RESOLUTION    LEDC_TIMER_1_BIT
+#define RCLK_DUTY_RESOLUTION    LEDC_TIMER_2_BIT
 #define RCLK_DUTY               (1u << RCLK_DUTY_RESOLUTION) / 2
 
 static bool s_running = false;
