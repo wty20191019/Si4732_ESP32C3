@@ -185,6 +185,9 @@ si4732_ssb_disable();           // 回到普通 AM
    → 正常 AM 模式重新上电 → `AM_TUNE_FREQ` 的 ARG1[5:4] 选择边带（01=LSB，10=USB）
 10. `SSB_BFO` 是有符号 Hz，写成 16 位补码；`SSB_MODE` 高字节是
     `AUDIOBW[3:0] | SBCUTFLT[7:4]`，低字节是 `AVC_DIVIDER/AVCEN/SMUTESEL/DSP_AFCDIS`
+11. **总线模式在 RST 上升沿由 GPO1/GPO2 采样决定**（AN332 第 6 节）：
+    2-wire 要求 GPO1=1、GPO2=0。驱动在复位前把 GPO1（GPIO3）推挽拉高，
+    RST 上升 50 µs 后再释放为输入上拉，避免落进 3-wire 模式导致 I2C 完全不应答
 
 ## 参考资料
 
