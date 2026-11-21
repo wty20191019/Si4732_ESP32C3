@@ -1032,14 +1032,15 @@ esp_err_t si4732_ssb_enable(bool usb)
 
     ESP_RETURN_ON_ERROR(si4732_apply_ssb_mode(), TAG, "配置 SSB_MODE 失败");
     s_ssb_active = true;
-    ESP_RETURN_ON_ERROR(si4732_ssb_set_bfo(s_bfo_hz), TAG, "设置 BFO 失败");
 
-    ESP_LOGI(TAG, "进入 SSB %s: %lukHz，BFO %+dHz，带宽 %d",
+    ESP_LOGI(TAG, "进入 SSB %s: %lukHz，BFO %+dHz，带宽 %d，TUNE ARG1=0x%02X",
              usb ? "USB" : "LSB", (unsigned long)s_freq_khz,
-             (int)s_bfo_hz, (int)s_ssb_bw);
+             (int)s_bfo_hz, (int)s_ssb_bw, usb ? 0x80 : 0x40);
 
-    /* 重新调谐一次，让 AM_TUNE_FREQ 的 ARG1 带上边带位 */
-    return si4732_tune(s_freq_khz);
+    /* 先调谐（AM_TUNE_FREQ 的 ARG1 D7:D6 带边带位），再写 BFO，
+     * 与 PU2CLR / 参考工程的 setSSB -> setFrequency -> setSSBBfo 顺序一致 */
+    ESP_RETURN_ON_ERROR(si4732_tune(s_freq_khz), TAG, "SSB 调谐失败");
+    return si4732_ssb_set_bfo(s_bfo_hz);
 }
 
 esp_err_t si4732_ssb_disable(void)
