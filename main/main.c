@@ -47,6 +47,10 @@ static const char *TAG = "app";
 
 #define VOLUME_DEFAULT          30
 
+/* 开机固定进入 FM 模式（忽略 NVS 中保存的波段/频率）；
+ * 改成 0 可恢复“上电回到上次波段/频率”的行为。 */
+#define BOOT_ALWAYS_FM          1
+
 /* ============================ 主页字段 ============================ */
 typedef enum {
     FIELD_FREQ = 0,
@@ -496,6 +500,14 @@ static void radio_apply_boot_settings(void)
     (void)si4732_set_mute(s_muted);
 
     si4732_band_t band = (si4732_band_t)s_boot_settings.band;
+    uint32_t freq_khz = s_boot_settings.freq_khz;
+
+#if BOOT_ALWAYS_FM
+    /* 开机固定 FM：避免上次留在 SW/SSB 时芯片状态不明确 */
+    band = SI4732_BAND_FM;
+    freq_khz = 101100;
+#endif
+
     if (band >= SI4732_BAND_COUNT) {
         band = SI4732_BAND_FM;
     }
@@ -504,16 +516,16 @@ static void radio_apply_boot_settings(void)
         ESP_LOGW(TAG, "恢复波段 %s 失败", band_name(band));
     }
 
-    if (si4732_tune(s_boot_settings.freq_khz) != ESP_OK) {
+    if (si4732_tune(freq_khz) != ESP_OK) {
         uint32_t default_khz = 0;
         si4732_band_info(band, NULL, NULL, NULL, &default_khz);
-        ESP_LOGW(TAG, "保存的频率 %lukHz 不在 %s 范围，改用 %lukHz",
-                 (unsigned long)s_boot_settings.freq_khz,
+        ESP_LOGW(TAG, "频率 %lukHz 不在 %s 范围，改用 %lukHz",
+                 (unsigned long)freq_khz,
                  band_name(band), (unsigned long)default_khz);
         (void)si4732_tune(default_khz);
     }
 
-    ESP_LOGI(TAG, "已恢复设置: %s %lukHz VOL %u %s",
+    ESP_LOGI(TAG, "开机默认: %s %lukHz VOL %u %s",
              band_name(si4732_get_band()),
              (unsigned long)si4732_get_frequency(),
              (unsigned)si4732_get_volume(),
