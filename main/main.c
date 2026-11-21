@@ -688,7 +688,7 @@ static void render_ui(const si4732_status_t *st)
     char line[28];
 
     /* ---------- 上区：大字频率 ---------- */
-    u8g2_SetFont(u, u8g2_font_9x18_tf);
+    u8g2_SetFont(u, u8g2_font_10x20_tf);
     format_freq_value(value, sizeof(value), st);
 
     const int w = (int)u8g2_GetStrWidth(u, value);
@@ -699,26 +699,22 @@ static void render_ui(const si4732_status_t *st)
     u8g2_DrawStr(u, (u8g2_uint_t)x, 20, value);
 
     if (s_field == FIELD_FREQ) {
+        u8g2_SetDrawColor(u, 2);
         if (s_editing) {
             /* 选中后：反白当前要调的那一位 */
             const int idx = freq_digit_index(st, step_hz_current());
-            int cx = x + idx * 9;
+            int cx = x + idx * 10;
             if (cx < 0) {
                 cx = 0;
-            } else if (cx > OLED_WIDTH - 9) {
-                cx = OLED_WIDTH - 9;
+            } else if (cx > OLED_WIDTH - 10) {
+                cx = OLED_WIDTH - 10;
             }
-            u8g2_SetDrawColor(u, 2);
-            u8g2_DrawBox(u, (u8g2_uint_t)cx, 2, 9, 18);
-            u8g2_SetDrawColor(u, 1);
+            u8g2_DrawBox(u, (u8g2_uint_t)cx, 2, 10, 18);
         } else {
-            /* 选中前：用 < 指示 */
-            int mx = x - 9;
-            if (mx < 0) {
-                mx = 0;
-            }
-            u8g2_DrawStr(u, (u8g2_uint_t)mx, 20, "<");
+            /* 选中前：反白第一个字符 */
+            u8g2_DrawBox(u, (u8g2_uint_t)x, 2, 10, 18);
         }
+        u8g2_SetDrawColor(u, 1);
     }
 
     /* ---------- 中区：状态行 ---------- */
@@ -765,7 +761,7 @@ static void render_ui(const si4732_status_t *st)
                          bw_text((uint8_t)si4732_ssb_get_bandwidth()));
                 break;
             case FIELD_BFO:
-                snprintf(cell, sizeof(cell), "BFO%+d", (int)st->bfo_hz);
+                snprintf(cell, sizeof(cell), "BFO %+d", (int)st->bfo_hz);
                 break;
             case FIELD_VOLUME:
                 snprintf(cell, sizeof(cell), "VOL  %u", (unsigned)st->volume);
@@ -778,18 +774,17 @@ static void render_ui(const si4732_status_t *st)
                 break;
             }
 
-            if (selected && !s_editing) {
-                /* 选中前：< 标记，文字右移 6px */
-                u8g2_DrawStr(u, x, y, "<");
-                u8g2_DrawStr(u, (u8g2_uint_t)(x + 6), y, cell);
-            } else {
-                u8g2_DrawStr(u, x, y, cell);
-            }
+            u8g2_DrawStr(u, x, y, cell);
 
-            if (selected && s_editing) {
-                /* 选中后：反白半屏单元格 */
+            if (selected) {
                 u8g2_SetDrawColor(u, 2);
-                u8g2_DrawBox(u, x, (uint8_t)(y - 8), 64, 10);
+                if (s_editing) {
+                    /* 选中后：反白整个半屏单元格 */
+                    u8g2_DrawBox(u, x, (uint8_t)(y - 8), 64, 10);
+                } else {
+                    /* 选中前：反白第一个字符 */
+                    u8g2_DrawBox(u, x, (uint8_t)(y - 8), 6, 10);
+                }
                 u8g2_SetDrawColor(u, 1);
             }
         }
