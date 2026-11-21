@@ -11,7 +11,7 @@
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "ssb_patch_init.h"
+#include "ssb_patch_full.h"
 
 static const char *TAG = "SI4732";
 

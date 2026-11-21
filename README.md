@@ -189,13 +189,15 @@ idf.py -p COM21 flash monitor # Ctrl+] 退出
 Si4732-A10 与 Si4735-D60 同 die，支持通过补丁开启 SSB：
 
 1. 首次进入 SSB 时，`si4732_ssb_enable()` 会：
+   - 先 `POWER_UP(FUNC=15)` 查询 library ID
    - 以 **PATCH=1** 重新 POWER_UP
-   - 把 `components/radio/si4732/ssb_patch_init.h`（约 15 KB）按 8 字节一行、
-     每行间隔 300 µs 下载到芯片内部 RAM
+   - 把 `components/radio/si4732/ssb_patch_full.h`（完整补丁，约 15.8 KB，
+     补丁 ID **0x9D29**，来源 Pocket-FT8 / SI4735 Touchscreen 工程）
+     按 8 字节一行、每行等待 CTS 下载到芯片内部 RAM
    - 写 `SSB_MODE`（带宽/边带滤波/AVC/AFC）和 `SSB_BFO`
    - 按普通 AM 模式重新上电，然后以 `AM_TUNE_FREQ` 的 ARG1 边带位调谐
 2. 补丁保存在芯片 RAM，**掉电或复位后丢失**；切换 FM/AM 不需要重新下载
-3. 补丁下载约 0.4 秒（1200 行 × 300 µs），期间 UI 暂停刷新
+3. 完整补丁约 2000 行，400 kHz 下下载约 2~4 秒；期间 UI 暂停刷新、跳过总线扫描
 
 > **注意**：补丁内容来自 PU2CLR 库收录的 Vadim Afonkin 版本，仅建议个人实验使用，
 > 不要用于商业产品。本板无晶振，SSB 补丁也使用外部 RCLK（XOSCEN=0）。
