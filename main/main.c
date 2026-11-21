@@ -715,8 +715,11 @@ static void radio_task(void *arg)
 
 /* ============================ 显示 ============================ */
 
-/* 画 2px 宽的竖直电平条，底边对齐 bottom，高度 2~9px */
-static void draw_level_bar(u8g2_t *u, uint8_t x, uint8_t bottom,
+/* 画 2px 宽的竖直电平条：最小 1px，最高 12px（占满状态行），
+ * bottom_row 是条最下面一个像素所在的行。 */
+#define LEVEL_BAR_MAX_H  12
+
+static void draw_level_bar(u8g2_t *u, uint8_t x, uint8_t bottom_row,
                            uint8_t value, uint8_t max_value)
 {
     if (max_value == 0) {
@@ -725,8 +728,8 @@ static void draw_level_bar(u8g2_t *u, uint8_t x, uint8_t bottom,
     if (value > max_value) {
         value = max_value;
     }
-    const uint8_t h = (uint8_t)(2 + ((unsigned)value * 7u) / max_value);
-    u8g2_DrawBox(u, x, (u8g2_uint_t)(bottom - h), 2, h);
+    const uint8_t h = (uint8_t)(1 + ((unsigned)value * (LEVEL_BAR_MAX_H - 1)) / max_value);
+    u8g2_DrawBox(u, x, (u8g2_uint_t)(bottom_row + 1 - h), 2, h);
 }
 
 static void render_not_ready(u8g2_t *u)
@@ -817,9 +820,9 @@ static void render_ui(const si4732_status_t *st)
     }
     u8g2_DrawStr(u, 0, 31, line);
 
-    /* 右侧 R/S 电平条：每条宽 2px，高 2~9px，底边对齐 y=32 */
-    draw_level_bar(u, 116, 32, st->rssi, 63);
-    draw_level_bar(u, 126, 32, st->snr, 30);
+    /* 右侧 R/S 电平条：每条宽 2px，高 1~12px，底边贴分隔线 y=33 */
+    draw_level_bar(u, 116, 33, st->rssi, 63);
+    draw_level_bar(u, 126, 33, st->snr, 30);
     u8g2_SetFont(u, u8g2_font_4x6_tf);
     u8g2_DrawStr(u, 111, 32, "R");
     u8g2_DrawStr(u, 121, 32, "S");
