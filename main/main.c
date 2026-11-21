@@ -27,9 +27,9 @@
 static const char *TAG = "app";
 
 /* ============================ 可调参数 ============================ */
-#define UI_TASK_PERIOD_MS       50
-#define UI_REDRAW_MS            500
-#define RADIO_POLL_MS           500
+#define UI_TASK_PERIOD_MS       20      /* UI 任务轮询周期 */
+#define UI_REDRAW_MS            20      /* 目标刷新间隔（受 I2C 带宽限制） */
+#define RADIO_POLL_MS           50      /* 状态轮询周期 */
 #define SETTINGS_SAVE_DELAY_MS  2000
 #define LED_TASK_PERIOD_MS      500
 #define RADIO_RETRY_MS          2000
@@ -170,11 +170,11 @@ static const char *step_text(uint32_t hz)
     }
 }
 
-/* 频率显示：FM -> MHz，SW -> 14.270000MHz，AM/LW -> kHz */
-static void format_freq(char *buf, size_t len, const si4732_status_t *st)
+/* 频率数值（不含波段前缀，供大字显示）：FM/SW 用 MHz，AM/LW 用 kHz */
+static void format_freq_value(char *buf, size_t len, const si4732_status_t *st)
 {
     if (st->band == SI4732_BAND_FM) {
-        snprintf(buf, len, "FM %lu.%03luMHz",
+        snprintf(buf, len, "%lu.%03luMHz",
                  (unsigned long)(st->freq_khz / 1000),
                  (unsigned long)(st->freq_khz % 1000));
     } else if (st->band == SI4732_BAND_SW) {
@@ -185,20 +185,19 @@ static void format_freq(char *buf, size_t len, const si4732_status_t *st)
         if (hz < 0) {
             hz = 0;
         }
-        snprintf(buf, len, "SW %lu.%06luMHz",
+        snprintf(buf, len, "%lu.%06luMHz",
                  (unsigned long)(hz / 1000000),
                  (unsigned long)(hz % 1000000));
     } else {
-        snprintf(buf, len, "%s %lukHz", band_name(st->band),
-                 (unsigned long)st->freq_khz);
+        snprintf(buf, len, "%lukHz", (unsigned long)st->freq_khz);
     }
 }
 
-/* 当前步进对应频率字符串中的第几个字符（用于反白选位） */
+/* 当前步进对应频率字符串中的第几个字符（用于大字频率选位） */
 static int freq_digit_index(const si4732_status_t *st, uint32_t step)
 {
-    char buf[24];
-    format_freq(buf, sizeof(buf), st);
+    char buf[20];
+    format_freq_value(buf, sizeof(buf), st);
     const char *dot = strchr(buf, '.');
 
     if (dot != NULL) {
@@ -658,7 +657,7 @@ static void draw_row(u8g2_t *u, uint8_t y, field_t f, const char *text)
 
     if (s_field == f) {
         u8g2_SetDrawColor(u, 2);   /* XOR 反白选中行 */
-        u8g2_DrawBox(u, 0, (uint8_t)(y - 6), OLED_WIDTH, 8);
+        u8g2_DrawBox(u, 0, (uint8_t)(y - 8), OLED_WIDTH, 10);
         u8g2_SetDrawColor(u, 1);
     }
 }
@@ -696,60 +695,97 @@ static void render_ui(const si4732_status_t *st)
         return;
     }
 
-    u8g2_SetFont(u, u8g2_font_5x7_tf);
+    char value[20];
+    char line[28];
 
-    char line[32];
-    char fbuf[24];
+    /* ---------- 上区：大字频率 ---------- */
+    u8g2_SetFont(u, u8g2_font_10x20_tf);
+    format_freq_value(value, sizeof(value), st);
 
-    /* 频率 */
-    format_freq(fbuf, sizeof(fbuf), st);
-    snprintf(line, sizeof(line), "FREQ %s", fbuf);
-    draw_row(u, 7, FIELD_FREQ, line);
+    const int w = (int)u8g2_GetStrWidth(u, value);
+    int x = (OLED_WIDTH - w) / 2;
+    if (x < 0) {
+        x = 0;
+    }
+    u8g2_DrawStr(u, (u8g2_uint_t)x, 20, value);
 
-    /* 频率编辑：反白当前要调的位 */
-    if (s_editing && s_field == FIELD_FREQ) {
-        int idx = 5 + freq_digit_index(st, step_hz_current());
-        int x = idx * 5;
-        if (x < 0) {
-            x = 0;
-        } else if (x > OLED_WIDTH - 5) {
-            x = OLED_WIDTH - 5;
+    if (s_field == FIELD_FREQ) {
+        u8g2_DrawFrame(u, 0, 0, OLED_WIDTH, 22);
+        if (s_editing) {
+            const int idx = freq_digit_index(st, step_hz_current());
+            int cx = x + idx * 10;
+            if (cx < 0) {
+                cx = 0;
+            } else if (cx > OLED_WIDTH - 10) {
+                cx = OLED_WIDTH - 10;
+            }
+            u8g2_SetDrawColor(u, 2);
+            u8g2_DrawBox(u, (u8g2_uint_t)cx, 2, 10, 18);
+            u8g2_SetDrawColor(u, 1);
         }
-        u8g2_SetDrawColor(u, 2);
-        u8g2_DrawBox(u, (uint8_t)x, 1, 5, 7);
-        u8g2_SetDrawColor(u, 1);
     }
 
-    snprintf(line, sizeof(line), "BAND %s", band_name(st->band));
-    draw_row(u, 15, FIELD_BAND, line);
-
-    snprintf(line, sizeof(line), "VOL  %u", (unsigned)st->volume);
-    draw_row(u, 23, FIELD_VOLUME, line);
-
-    snprintf(line, sizeof(line), "BW   %s",
-             bw_text((uint8_t)si4732_ssb_get_bandwidth()));
-    draw_row(u, 31, FIELD_BW, line);
-
-    snprintf(line, sizeof(line), "SSB  %s", ssb_name());
-    draw_row(u, 39, FIELD_SSB, line);
-
-    snprintf(line, sizeof(line), "BFO  %+dHz", (int)st->bfo_hz);
-    draw_row(u, 47, FIELD_BFO, line);
-
-    snprintf(line, sizeof(line), "MUTE %s", s_muted ? "ON" : "OFF");
-    draw_row(u, 55, FIELD_MUTE, line);
-
-    if (s_editing) {
-        if (s_field == FIELD_FREQ) {
-            snprintf(line, sizeof(line), "STEP %sHz", step_text(step_hz_current()));
-        } else {
-            snprintf(line, sizeof(line), "EDIT %s", field_name(s_field));
-        }
+    /* ---------- 中区：状态行 ---------- */
+    u8g2_SetFont(u, u8g2_font_6x10_tf);
+    if (s_editing && s_field == FIELD_FREQ) {
+        snprintf(line, sizeof(line), "%s %s  STEP %s",
+                 band_name(st->band), ssb_name(),
+                 step_text(step_hz_current()));
+    } else if (s_editing) {
+        snprintf(line, sizeof(line), "%s %s  EDIT %s",
+                 band_name(st->band), ssb_name(), field_name(s_field));
     } else {
-        snprintf(line, sizeof(line), "RSSI %u SNR %u",
+        snprintf(line, sizeof(line), "%s %s%s  R%u S%u",
+                 band_name(st->band), ssb_name(),
+                 s_muted ? " M" : "",
                  (unsigned)st->rssi, (unsigned)st->snr);
     }
-    u8g2_DrawStr(u, 0, 63, line);
+    u8g2_DrawStr(u, 0, 31, line);
+    u8g2_DrawHLine(u, 0, 34, OLED_WIDTH);
+
+    /* ---------- 下区：3 行滚动字段列表 ---------- */
+    static const field_t list[] = {
+        FIELD_BAND, FIELD_VOLUME, FIELD_BW, FIELD_SSB, FIELD_BFO, FIELD_MUTE,
+    };
+    const int count = (int)(sizeof(list) / sizeof(list[0]));
+    const int sel = (s_field == FIELD_FREQ) ? -1 : (int)s_field - 1;
+
+    int start = (sel < 0) ? 0 : sel - 1;
+    if (start < 0) {
+        start = 0;
+    } else if (start > count - 3) {
+        start = count - 3;
+    }
+
+    for (int i = 0; i < 3; i++) {
+        const int li = start + i;
+        const field_t f = list[li];
+        const uint8_t y = (uint8_t)(42 + i * 10);
+
+        switch (f) {
+        case FIELD_BAND:
+            snprintf(line, sizeof(line), "BAND %s", band_name(st->band));
+            break;
+        case FIELD_VOLUME:
+            snprintf(line, sizeof(line), "VOL  %u", (unsigned)st->volume);
+            break;
+        case FIELD_BW:
+            snprintf(line, sizeof(line), "BW   %s",
+                     bw_text((uint8_t)si4732_ssb_get_bandwidth()));
+            break;
+        case FIELD_SSB:
+            snprintf(line, sizeof(line), "SSB  %s", ssb_name());
+            break;
+        case FIELD_BFO:
+            snprintf(line, sizeof(line), "BFO  %+dHz", (int)st->bfo_hz);
+            break;
+        default:
+            snprintf(line, sizeof(line), "MUTE %s", s_muted ? "ON" : "OFF");
+            break;
+        }
+
+        draw_row(u, y, f, line);
+    }
 
     oled_refresh();
 }
