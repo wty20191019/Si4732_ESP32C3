@@ -28,7 +28,7 @@ static const char *TAG = "app";
 
 /* ============================ 可调参数 ============================ */
 #define UI_TASK_PERIOD_MS       20      /* UI 任务轮询周期 */
-#define UI_REDRAW_MS            20      /* 目标刷新间隔（受 I2C 带宽限制） */
+#define UI_REDRAW_MS            50      /* 目标刷新间隔（受 I2C 带宽限制） */
 #define RADIO_POLL_MS           50      /* 状态轮询周期 */
 #define SETTINGS_SAVE_DELAY_MS  2000
 #define LED_TASK_PERIOD_MS      500
