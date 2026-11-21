@@ -829,9 +829,10 @@ static void render_ui(const si4732_status_t *st)
     u8g2_DrawStr(u, 0, 31, line);
 
     /* 右侧 R/S 电平条：每条宽 2px，高 1~12px，底边贴分隔线 y=33；
+     * 量程按“R24 / S6 正好半高”标定：RSSI 满格 48，SNR 满格 12；
      * 左侧数字 R/S 已经标明顺序，这里不再重复画标签 */
-    draw_level_bar(u, 122, 33, st->rssi, 63);
-    draw_level_bar(u, 126, 33, st->snr, 30);
+    draw_level_bar(u, 122, 33, st->rssi, 48);
+    draw_level_bar(u, 126, 33, st->snr, 12);
 
     u8g2_DrawHLine(u, 0, 34, OLED_WIDTH);
 
