@@ -6,7 +6,7 @@
   // 本项目由 ESP-IDF 扩展负责构建，关闭 CMake Tools 的自动配置，避免它找不到 cmake
   "cmake.configureOnOpen": false,
   "idf.flashType": "JTAG",
-  "idf.port": "COM20",
+  "idf.port": "COM21",
   "idf.openOcdConfigs": [
     "board/esp32c3-builtin.cfg"
   ],

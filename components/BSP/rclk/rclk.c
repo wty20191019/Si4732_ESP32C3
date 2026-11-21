@@ -51,8 +51,11 @@ esp_err_t rclk_start(void)
     };
     ESP_RETURN_ON_ERROR(ledc_channel_config(&channel_cfg), TAG, "配置 LEDC 通道失败");
 
+    const uint32_t actual_hz = ledc_get_freq(RCLK_LEDC_SPEED_MODE, RCLK_LEDC_TIMER);
+    ESP_LOGI(TAG, "RCLK 实际频率: %lu Hz（目标 %d Hz），GPIO%d",
+             (unsigned long)actual_hz, RCLK_FREQ_HZ, (int)BOARD_SI4732_RCLK_GPIO);
+
     s_running = true;
-    ESP_LOGI(TAG, "32.768kHz 参考时钟已启动: GPIO%d", (int)BOARD_SI4732_RCLK_GPIO);
     return ESP_OK;
 }
 
