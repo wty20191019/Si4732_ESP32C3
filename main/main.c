@@ -30,7 +30,8 @@ static const char *TAG = "app";
 #define UI_REDRAW_MS            50      /* 目标刷新间隔（受 I2C 带宽限制） */
 #define RADIO_POLL_MS           50      /* 状态轮询周期 */
 #define SETTINGS_SAVE_DELAY_MS  2000
-#define LED_TASK_PERIOD_MS      5000   // LED 任务周期 5s
+#define LED_BLINK_PERIOD_MS     5000   // 每 5 秒闪一次
+#define LED_ON_MS               500    // 每次亮 0.5 秒
 #define RADIO_RETRY_MS          2000
 #define OLED_RETRY_MS           2000
 
@@ -1225,8 +1226,10 @@ static void led_task(void *arg)
     led_init();
 
     while (1) {
-        led_toggle();
-        vTaskDelay(pdMS_TO_TICKS(LED_TASK_PERIOD_MS));
+        led_set(true);
+        vTaskDelay(pdMS_TO_TICKS(LED_ON_MS));
+        led_set(false);
+        vTaskDelay(pdMS_TO_TICKS(LED_BLINK_PERIOD_MS - LED_ON_MS));
     }
 }
 

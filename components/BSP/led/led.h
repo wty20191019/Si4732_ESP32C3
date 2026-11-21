@@ -23,6 +23,3 @@ void led_init(void);
 
 // 按布尔值控制：true 点亮，false 熄灭
 void led_set(bool on);
-
-// 翻转当前状态
-void led_toggle(void);

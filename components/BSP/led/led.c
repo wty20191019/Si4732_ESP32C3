@@ -1,8 +1,5 @@
 #include "led.h"
 
-// 记录当前 LED 状态，供 led_toggle 使用
-static bool s_is_on = false;
-
 void led_init(void)
 {
     gpio_config_t io_conf = {
@@ -22,10 +19,4 @@ void led_set(bool on)
     // LED_ACTIVE_LEVEL 为 1 时高电平点亮，为 0 时低电平点亮
     int level = on ? LED_ACTIVE_LEVEL : !LED_ACTIVE_LEVEL;
     ESP_ERROR_CHECK(gpio_set_level(LED_GPIO_PIN, level));
-    s_is_on = on;
-}
-
-void led_toggle(void)
-{
-    led_set(!s_is_on);
 }
