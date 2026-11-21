@@ -47,9 +47,9 @@ static const char *TAG = "app";
 
 #define VOLUME_DEFAULT          30
 
-/* 开机固定进入 FM 模式（忽略 NVS 中保存的波段/频率）；
- * 改成 0 可恢复“上电回到上次波段/频率”的行为。 */
-#define BOOT_ALWAYS_FM          1
+/* 开机恢复上次的波段/频率/带宽/音量/静音；
+ * SSB 始终默认关闭（补丁不保留，需要重新进入）。 */
+#define BOOT_ALWAYS_FM          0
 
 /* ============================ 主页字段 ============================ */
 typedef enum {
@@ -449,6 +449,7 @@ static void adjust_bw(int delta)
         bw = 0;
     }
     (void)si4732_ssb_set_bandwidth((si4732_ssb_bandwidth_t)bw);
+    settings_mark_dirty();
 }
 
 static void adjust_ssb(int delta)
@@ -508,11 +509,16 @@ static void radio_apply_boot_settings(void)
     s_muted = s_boot_settings.mute;
     (void)si4732_set_mute(s_muted);
 
+    /* 带宽是 SSB 设置，先写进驱动；SSB 本身保持关闭 */
+    if (s_boot_settings.bw > 5) {
+        s_boot_settings.bw = 0;
+    }
+    (void)si4732_ssb_set_bandwidth((si4732_ssb_bandwidth_t)s_boot_settings.bw);
+
     si4732_band_t band = (si4732_band_t)s_boot_settings.band;
     uint32_t freq_khz = s_boot_settings.freq_khz;
 
 #if BOOT_ALWAYS_FM
-    /* 开机固定 FM：避免上次留在 SW/SSB 时芯片状态不明确 */
     band = SI4732_BAND_FM;
     freq_khz = 101100;
 #endif
@@ -534,11 +540,12 @@ static void radio_apply_boot_settings(void)
         (void)si4732_tune(default_khz);
     }
 
-    ESP_LOGI(TAG, "开机默认: %s %lukHz VOL %u %s",
+    ESP_LOGI(TAG, "开机默认: %s %lukHz VOL %u %s BW %s SSB OFF",
              band_name(si4732_get_band()),
              (unsigned long)si4732_get_frequency(),
              (unsigned)si4732_get_volume(),
-             s_muted ? "MUTE" : "UNMUTE");
+             s_muted ? "MUTE" : "UNMUTE",
+             bw_text((uint8_t)si4732_ssb_get_bandwidth()));
 }
 
 static void radio_save_settings(void)
@@ -552,6 +559,7 @@ static void radio_save_settings(void)
         .freq_khz = si4732_get_frequency(),
         .volume = si4732_get_volume(),
         .mute = s_muted,
+        .bw = (uint8_t)si4732_ssb_get_bandwidth(),
     };
 
     if (s.freq_khz == 0) {
@@ -561,11 +569,12 @@ static void radio_save_settings(void)
     }
 
     if (settings_save(&s)) {
-        ESP_LOGI(TAG, "设置已保存: %s %lukHz VOL %u %s",
+        ESP_LOGI(TAG, "设置已保存: %s %lukHz VOL %u %s BW %s",
                  band_name(si4732_get_band()),
                  (unsigned long)s.freq_khz,
                  (unsigned)s.volume,
-                 s.mute ? "MUTE" : "UNMUTE");
+                 s.mute ? "MUTE" : "UNMUTE",
+                 bw_text(s.bw));
     } else {
         ESP_LOGW(TAG, "设置保存失败");
     }
@@ -1076,6 +1085,7 @@ static void console_handle_line(char *line)
         }
         if (si4732_ssb_set_bandwidth((si4732_ssb_bandwidth_t)bw) == ESP_OK) {
             ESP_LOGI(TAG, "SSB 音频带宽索引 = %d", bw);
+            settings_mark_dirty();
             status_refresh();
         }
         return;

@@ -27,6 +27,7 @@ typedef struct {
     uint32_t freq_khz;   /* 当前频率，单位 kHz */
     uint8_t  volume;     /* 0~63 */
     bool     mute;       /* true = 静音 */
+    uint8_t  bw;         /* SSB 带宽索引 0~5（1.2k/2.2k/3k/4k/500/1k） */
 } radio_settings_t;
 
 /**

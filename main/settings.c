@@ -10,6 +10,7 @@ static const char *TAG = "SETTINGS";
 #define KEY_FREQ    "freq"
 #define KEY_VOLUME  "vol"
 #define KEY_MUTE    "mute"
+#define KEY_BW      "bw"
 
 #define SETTINGS_DEFAULT_BAND       0           /* FM */
 #define SETTINGS_DEFAULT_FREQ_KHZ   101100      /* 101.1 MHz */
@@ -21,6 +22,7 @@ void settings_defaults(radio_settings_t *s)
     s->freq_khz = SETTINGS_DEFAULT_FREQ_KHZ;
     s->volume = SETTINGS_DEFAULT_VOLUME;
     s->mute = false;
+    s->bw = 0;
 }
 
 bool settings_load(radio_settings_t *s)
@@ -34,6 +36,7 @@ bool settings_load(radio_settings_t *s)
     uint32_t freq = s->freq_khz;
     uint8_t volume = s->volume;
     uint8_t mute = s->mute ? 1 : 0;
+    uint8_t bw = s->bw;
     bool found = false;
 
     if (nvs_get_u8(handle, KEY_BAND, &band) == ESP_OK) {
@@ -48,6 +51,9 @@ bool settings_load(radio_settings_t *s)
     if (nvs_get_u8(handle, KEY_MUTE, &mute) == ESP_OK) {
         found = true;
     }
+    if (nvs_get_u8(handle, KEY_BW, &bw) == ESP_OK) {
+        found = true;
+    }
 
     nvs_close(handle);
 
@@ -58,6 +64,9 @@ bool settings_load(radio_settings_t *s)
     if (volume > 63) {
         volume = SETTINGS_DEFAULT_VOLUME;
     }
+    if (bw > 5) {
+        bw = 0;
+    }
     if (freq == 0) {
         freq = SETTINGS_DEFAULT_FREQ_KHZ;
     }
@@ -66,11 +75,12 @@ bool settings_load(radio_settings_t *s)
     s->freq_khz = freq;
     s->volume = volume;
     s->mute = (mute != 0);
+    s->bw = bw;
 
     if (found) {
-        ESP_LOGI(TAG, "读取设置: band=%u freq=%lukHz vol=%u mute=%d",
+        ESP_LOGI(TAG, "读取设置: band=%u freq=%lukHz vol=%u mute=%d bw=%u",
                  (unsigned)s->band, (unsigned long)s->freq_khz,
-                 (unsigned)s->volume, (int)s->mute);
+                 (unsigned)s->volume, (int)s->mute, (unsigned)s->bw);
     }
     return found;
 }
@@ -91,6 +101,9 @@ bool settings_save(const radio_settings_t *s)
     }
     if (err == ESP_OK) {
         err = nvs_set_u8(handle, KEY_MUTE, s->mute ? 1 : 0);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(handle, KEY_BW, s->bw);
     }
     if (err == ESP_OK) {
         err = nvs_commit(handle);
