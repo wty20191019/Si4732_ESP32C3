@@ -410,16 +410,19 @@ static esp_err_t si4732_power_up_once(si4732_band_t band, bool crystal)
     ESP_RETURN_ON_ERROR(si4732_set_property(PROP_REFCLK_PRESCALE, 1),
                         TAG, "设置 REFCLK_PRESCALE 失败");
 
-    /* 回读确认芯片内部真的接受 32768Hz 参考时钟 */
+    /* 回读确认芯片内部真的接受 32768Hz 参考时钟，同时校验通信是否正常 */
     uint16_t refclk_read = 0;
-    if (si4732_get_property(PROP_REFCLK_FREQ, &refclk_read) == ESP_OK) {
-        if (refclk_read != SI4732_REFCLK_HZ) {
-            ESP_LOGW(TAG, "REFCLK_FREQ 回读 = %u Hz（期望 %d Hz）",
-                     (unsigned)refclk_read, SI4732_REFCLK_HZ);
-        } else {
-            ESP_LOGI(TAG, "REFCLK_FREQ 回读 = %u Hz", (unsigned)refclk_read);
-        }
+    const esp_err_t refclk_err = si4732_get_property(PROP_REFCLK_FREQ, &refclk_read);
+    if (refclk_err != ESP_OK) {
+        ESP_LOGE(TAG, "读取 REFCLK_FREQ 失败: %s", esp_err_to_name(refclk_err));
+        return refclk_err;
     }
+    if (refclk_read != SI4732_REFCLK_HZ) {
+        ESP_LOGE(TAG, "REFCLK_FREQ 回读 = %u Hz（期望 %d Hz），判定芯片通信异常",
+                 (unsigned)refclk_read, SI4732_REFCLK_HZ);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    ESP_LOGI(TAG, "REFCLK_FREQ 回读 = %u Hz", (unsigned)refclk_read);
 
     /* 搜台范围必须跟着波段走，否则 SW/LW 会跑回 MW 默认范围 */
     ESP_RETURN_ON_ERROR(si4732_apply_band_config(band), TAG, "配置波段搜台参数失败");
@@ -610,9 +613,11 @@ static esp_err_t si4732_read_tune_status(bool fm, bool intack, bool *stc,
         *valid = (resp[1] & TUNE_STATUS_VALID) != 0;   /* VALID = 信号是否有效 */
     }
 
-    /* READFREQ 无论 VALID 是否为 1 都是当前实际频率 */
+    /* READFREQ 无论 VALID 是否为 1 都是当前实际频率；0 视为无效数据 */
     const uint32_t freq = ((uint32_t)resp[2] << 8) | resp[3];
-    s_freq_khz = fm ? freq * 10 : freq;
+    if (freq != 0) {
+        s_freq_khz = fm ? freq * 10 : freq;
+    }
 
     if (rssi) {
         *rssi = resp[4];
@@ -1140,7 +1145,7 @@ esp_err_t si4732_init(void)
         return err;
     }
 
-    s_last_stage = "OK";
+    s_last_stage = "VERIFY";
     s_last_error = ESP_OK;
 
     uint32_t default_khz = 0;
@@ -1148,14 +1153,18 @@ esp_err_t si4732_init(void)
     s_freq_khz = default_khz;
 
     si4732_firmware_t fw;
-    if (si4732_get_firmware(&fw) == ESP_OK) {
-        ESP_LOGI(TAG, "芯片信息: PN=0x%02X FW=%u.%u PATCH=0x%04X COMP=0x%04X REV=0x%02X",
-                 (unsigned)fw.part_number, (unsigned)fw.fw_major, (unsigned)fw.fw_minor,
-                 (unsigned)fw.patch_id, (unsigned)fw.component_id, (unsigned)fw.chip_rev);
-    } else {
-        ESP_LOGW(TAG, "读取芯片版本失败（GET_REV 异常）");
+    const esp_err_t fw_err = si4732_get_firmware(&fw);
+    if (fw_err != ESP_OK || fw.part_number != 0x20) {
+        s_last_error = (fw_err != ESP_OK) ? fw_err : ESP_ERR_INVALID_RESPONSE;
+        ESP_LOGE(TAG, "芯片校验失败: PN=0x%02X（期望 0x20，Si4732）",
+                 (unsigned)fw.part_number);
+        return s_last_error;
     }
+    ESP_LOGI(TAG, "芯片信息: PN=0x%02X FW=%u.%u PATCH=0x%04X COMP=0x%04X REV=0x%02X",
+             (unsigned)fw.part_number, (unsigned)fw.fw_major, (unsigned)fw.fw_minor,
+             (unsigned)fw.patch_id, (unsigned)fw.component_id, (unsigned)fw.chip_rev);
 
+    s_last_stage = "OK";
     ESP_LOGI(TAG, "初始化完成: I2C 0x%02X，REFCLK %dHz，音量 %u",
              SI4732_I2C_ADDR, SI4732_REFCLK_HZ, (unsigned)s_volume);
     return ESP_OK;

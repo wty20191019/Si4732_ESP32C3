@@ -323,16 +323,24 @@ static void settings_mark_dirty(void)
     s_settings_dirty = true;
 }
 
-static void status_refresh(void)
+static int s_status_fail = 0;
+
+static bool status_refresh(void)
 {
     if (!s_radio_ready) {
-        return;
+        return false;
     }
 
     si4732_status_t st;
     if (si4732_get_status(&st) != ESP_OK) {
-        return;
+        if (++s_status_fail >= 3) {
+            ESP_LOGE(TAG, "连续 %d 次读取状态失败，重新初始化 Si4732", s_status_fail);
+            s_status_fail = 0;
+            s_radio_ready = false;
+        }
+        return false;
     }
+    s_status_fail = 0;
 
     if (s_status_lock != NULL &&
         xSemaphoreTake(s_status_lock, pdMS_TO_TICKS(100)) == pdTRUE) {
@@ -340,6 +348,7 @@ static void status_refresh(void)
         s_status_dirty = true;
         xSemaphoreGive(s_status_lock);
     }
+    return true;
 }
 
 static bool status_snapshot(si4732_status_t *out)
@@ -596,6 +605,21 @@ static void radio_task(void *arg)
     TickType_t last_poll = xTaskGetTickCount();
 
     while (1) {
+        /* 通信丢失后重新初始化，而不是一直刷 NACK 日志 */
+        if (!s_radio_ready) {
+            ESP_LOGW(TAG, "Si4732 通信丢失，复位总线并重新初始化 ...");
+            (void)board_i2c_bus_reset();
+            vTaskDelay(pdMS_TO_TICKS(10));
+            if (si4732_init() == ESP_OK) {
+                s_radio_ready = true;
+                s_status_fail = 0;
+                radio_apply_boot_settings();
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(RADIO_RETRY_MS));
+            }
+            continue;
+        }
+
         /* ---------- 旋转：选字段 / 改值 ---------- */
         const int32_t count = encoder_get_count();
         const int32_t delta = count - last_count;
@@ -1208,6 +1232,8 @@ void app_main(void)
         ESP_LOGE(TAG, "I2C 总线初始化失败");
     }
 
+    /* 清除上一次运行可能留下的总线锁死 */
+    (void)board_i2c_bus_reset();
     (void)si4732_reset();
     vTaskDelay(pdMS_TO_TICKS(10));
 

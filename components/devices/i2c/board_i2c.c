@@ -92,6 +92,26 @@ bool board_i2c_lines_idle(void)
            gpio_get_level(BOARD_I2C_SCL_GPIO) != 0;
 }
 
+esp_err_t board_i2c_bus_reset(void)
+{
+    i2c_master_bus_handle_t bus = NULL;
+    ESP_RETURN_ON_ERROR(board_i2c_get_bus(&bus), TAG, "获取 I2C 总线失败");
+
+    if (board_i2c_lock(pdMS_TO_TICKS(BOARD_I2C_LOCK_TIMEOUT_MS)) != ESP_OK) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    const esp_err_t err = i2c_master_bus_reset(bus);
+    board_i2c_unlock();
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "I2C 总线已复位");
+    } else {
+        ESP_LOGW(TAG, "I2C 总线复位失败: %s", esp_err_to_name(err));
+    }
+    return err;
+}
+
 bool board_i2c_probe_addr(uint8_t addr)
 {
     if (board_i2c_init() != ESP_OK) {

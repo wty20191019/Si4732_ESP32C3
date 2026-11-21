@@ -59,6 +59,13 @@ esp_err_t board_i2c_get_bus(i2c_master_bus_handle_t *bus);
 bool board_i2c_probe_addr(uint8_t addr);
 
 /**
+ * @brief 复位 I2C 总线（拉 9 个 SCL 时钟 + STOP）
+ *
+ * 从机异常把 SDA 拉住时，用它释放总线，再重新初始化设备。
+ */
+esp_err_t board_i2c_bus_reset(void);
+
+/**
  * @brief 检查 SDA/SCL 空闲电平是否都为高
  *
  * 总线被拉低或短路时返回 false，可用于在扫描/通信前快速判断总线状态。
