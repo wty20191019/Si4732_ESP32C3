@@ -84,6 +84,7 @@ Si4732-A10/
 - **I2C 互斥**：Si4732 与 OLED 共用总线，驱动内部统一用 `board_i2c_lock()`
 - **阻塞操作在任务里**：调谐/搜台最长等待 2 秒，但只阻塞 `radio` 任务
 - **参考时钟先行**：`rclk_start()` → `board_i2c_init()` → `si4732_init()`
+- **时钟模式自适应**：先按外部 RCLK（XOSCEN=0）上电，失败自动复位后按板载晶振（XOSCEN=1）重试
 - **不启用 WiFi/BLE**：避免射频噪声串入接收链路
 
 ## 编译与烧录
@@ -117,6 +118,7 @@ idf.py -p COM20 flash monitor # Ctrl+] 退出
 | `ssb0` | 退出 SSB，回到普通 AM |
 | `bfo150` / `bfo-150` | 设置 BFO 偏移（Hz，范围 ±16383） |
 | `bw0` ~ `bw5` | SSB 音频带宽：1.2k / 2.2k / 3k / 4k / 500Hz / 1kHz |
+| `i2c` / `diag` | 扫描 I2C 总线并打印 Si4732/OLED 在线状态与时钟模式 |
 | `v` | 打印频率 / RSSI / SNR / 音量 |
 | `vol40` | 音量 0~63 |
 | `+` / `-` | 向上 / 向下搜台（SSB 下不支持） |
@@ -147,8 +149,8 @@ Si4732-A10 与 Si4735-D60 同 die，支持通过补丁开启 SSB：
 3. 补丁下载约 0.4 秒（1200 行 × 300 µs），期间 UI 暂停刷新
 
 > **注意**：补丁内容来自 PU2CLR 库收录的 Vadim Afonkin 版本，仅建议个人实验使用，
-> 不要用于商业产品。若你的模块板载无源晶振而不是外部 RCLK，把
-> `SI4732_SSB_PATCH_XOSCEN` 改成 1（在 `si4732.c` 中）。
+> 不要用于商业产品。驱动会自动在“外部 RCLK（XOSCEN=0）”和“板载晶振（XOSCEN=1）”
+> 两种时钟模式之间重试，所以晶振版模块不需要改代码。
 
 SSB 只影响 AM 模式（MW/SW/LW），FM 下调用会返回错误；SSB 模式没有硬件搜台，
 `si4732_seek()` 会返回 `ESP_ERR_NOT_SUPPORTED`。
@@ -225,5 +227,8 @@ si4732_ssb_disable();           // 回到普通 AM
 | OLED 花屏 | I2C 速率过高，把 `BOARD_I2C_CLK_HZ` 降到 400k 以下 |
 | 上电直接进下载模式 | GPIO9（BOOT/编码器按键）上电瞬间被按住 |
 | 串口命令没反应 | 命令走 UART0（GPIO20/21），不是 USB |
-| SSB 没声音或啸叫 | 先用 `bfo150`/`bfo-150` 微调；确认在 SW/AM 波段；板载晶振模块要把 `SI4732_SSB_PATCH_XOSCEN` 改成 1 |
+| SSB 没声音或啸叫 | 先用 `bfo150`/`bfo-150` 微调；确认在 SW/AM 波段 |
 | SSB 切换后频率偏移 | 补丁模式上电后没有重新写 `REFCLK_FREQ`，检查 RCLK 与 `si4732_patch_power_up()` |
+| OLED 显示 `Si4732 NOT READY` | 串口看具体失败步骤；发 `diag` 看 0x22 是否在线；重点查 SENB 接地、3.3V、上拉、RST |
+| 日志 `复位后等待 CTS 失败` | I2C 没有应答：SENB 是否接 GND、模块是否供电、地址是否 0x22 |
+| 日志 `等待 CTS 超时` + 自动切换时钟 | 外部 RCLK 没有波形，或模块是晶振版；驱动会两种模式都试一遍 |

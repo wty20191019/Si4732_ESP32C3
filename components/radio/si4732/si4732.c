@@ -17,6 +17,7 @@ static const char *TAG = "SI4732";
 
 /* ============================ AN332 命令字 ============================ */
 #define CMD_POWER_UP            0x01
+#define CMD_GET_REV             0x10
 #define CMD_POWER_DOWN          0x11
 #define CMD_SET_PROPERTY        0x12
 #define CMD_GET_PROPERTY        0x13
@@ -54,7 +55,7 @@ static const char *TAG = "SI4732";
 
 /* ============================ 时序参数 ============================ */
 #define SI4732_XFER_TIMEOUT_MS      50      /* 单次 I2C 传输超时 */
-#define SI4732_CTS_TIMEOUT_MS       2000    /* 等待 CTS 的超时（上电约需 110ms） */
+#define SI4732_CTS_TIMEOUT_MS       1000    /* 等待 CTS 的超时（上电约需 110ms） */
 #define SI4732_TUNE_TIMEOUT_MS      2000    /* 等待调谐完成超时 */
 #define SI4732_POWERUP_DELAY_MS     110     /* AN332 建议的上电稳定时间 */
 
@@ -63,10 +64,10 @@ static const char *TAG = "SI4732";
 #define SI4732_PATCH_DELAY_US       300     /* 每行之间的最小间隔（PU2CLR 取值） */
 #define SI4732_SSB_PATCH_DELAY_MS   50      /* 补丁 POWER_UP 后的稳定时间 */
 
-/* 补丁模式 POWER_UP 的 XOSCEN 位：
- * 本板由 ESP32 的 LEDC 提供外部 32.768kHz，使用 0（RCLK 模式）；
- * 若你的模块板载无源晶振，改成 1。 */
-#define SI4732_SSB_PATCH_XOSCEN     0
+/* 时钟模式：false = 外部 RCLK（XOSCEN=0），true = 板载晶振（XOSCEN=1）。
+ * 初始化时先按外部 RCLK 尝试，失败会自动切到晶振模式重试，
+ * 兼容“模块自带 32.768kHz 晶振、RCLK 引脚未接线”的情况。 */
+static bool s_use_crystal = false;
 
 /* ============================ 驱动内部状态 ============================ */
 static i2c_master_dev_handle_t s_dev = NULL;
@@ -286,10 +287,15 @@ esp_err_t si4732_reset(void)
     s_powered = false;
     s_ssb_active = false;
     s_patch_loaded = false;
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "复位后等待 CTS 失败: %s（检查 SENB 是否接 GND、VDD 3.3V、SDA/SCL 上拉、RST 接线）",
+                 esp_err_to_name(err));
+    }
     return err;
 }
 
-static esp_err_t si4732_power_up(si4732_band_t band)
+static esp_err_t si4732_power_up_once(si4732_band_t band, bool crystal)
 {
     /* FUNC：0 = FM，1 = AM（MW/SW/LW 都使用 AM 模式）
      * ARG1 bit6 = GPO2OEN（RDS 用，这里保留默认值 1）
@@ -297,14 +303,16 @@ static esp_err_t si4732_power_up(si4732_band_t band)
     const uint8_t func = si4732_band_is_fm(band) ? 0x00 : 0x01;
     const uint8_t cmd[3] = {
         CMD_POWER_UP,
-        (uint8_t)(0x40 | func),
+        (uint8_t)(0x40 | (crystal ? 0x10 : 0x00) | func),
         0x05,
     };
 
-    ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), NULL, 0), TAG, "POWER_UP 失败");
+    ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), NULL, 0), TAG,
+                        "POWER_UP 失败 (FUNC=%u, XOSCEN=%u)",
+                        (unsigned)func, crystal ? 1u : 0u);
     vTaskDelay(pdMS_TO_TICKS(SI4732_POWERUP_DELAY_MS));
 
-    /* 外部 32.768kHz 参考时钟：不设置会让调谐频率整体偏移 */
+    /* 参考时钟：不设置会让调谐频率整体偏移 */
     ESP_RETURN_ON_ERROR(si4732_set_property(PROP_REFCLK_FREQ, SI4732_REFCLK_HZ),
                         TAG, "设置 REFCLK_FREQ 失败");
     ESP_RETURN_ON_ERROR(si4732_set_property(PROP_REFCLK_PRESCALE, 1),
@@ -316,6 +324,40 @@ static esp_err_t si4732_power_up(si4732_band_t band)
     s_powered = true;
     s_band = band;
     return ESP_OK;
+}
+
+/**
+ * @brief 上电，并在外部 RCLK / 板载晶振之间自动重试
+ *
+ * 很多 Si4732-A10 模块自带 32.768kHz 晶振，此时 RCLK 不能接外部时钟，
+ * POWER_UP 必须带 XOSCEN=1；本板方案则是外部 RCLK + XOSCEN=0。
+ * 两种模式都试一次，成功后记住，避免每次切换波段都失败重试。
+ */
+static esp_err_t si4732_power_up(si4732_band_t band)
+{
+    esp_err_t err = si4732_power_up_once(band, s_use_crystal);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "按%s时钟模式上电失败，改用%s模式重试",
+                 s_use_crystal ? "板载晶振" : "外部 RCLK",
+                 s_use_crystal ? "外部 RCLK" : "板载晶振");
+
+        /* 先复位，清掉上一次失败留下的状态 */
+        (void)si4732_reset();
+
+        err = si4732_power_up_once(band, !s_use_crystal);
+        if (err == ESP_OK) {
+            s_use_crystal = !s_use_crystal;
+        }
+    }
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "时钟模式: %s",
+                 s_use_crystal ? "板载晶振 XOSCEN=1" : "外部 RCLK 32.768kHz XOSCEN=0");
+    } else {
+        ESP_LOGE(TAG, "外部 RCLK 与板载晶振两种模式都无法上电");
+    }
+    return err;
 }
 
 esp_err_t si4732_power_down(void)
@@ -363,6 +405,30 @@ esp_err_t si4732_get_property(uint16_t prop, uint16_t *value)
 
     *value = (uint16_t)(((uint16_t)resp[2] << 8) | resp[3]);
     return ESP_OK;
+}
+
+esp_err_t si4732_get_firmware(si4732_firmware_t *out)
+{
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "out 不能为空");
+
+    const uint8_t cmd[1] = { CMD_GET_REV };
+    uint8_t resp[9] = {0};
+
+    ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), resp, sizeof(resp)),
+                        TAG, "GET_REV 失败");
+
+    out->part_number = resp[1];
+    out->fw_major = resp[2];
+    out->fw_minor = resp[3];
+    out->patch_id = (uint16_t)(((uint16_t)resp[4] << 8) | resp[5]);
+    out->component_id = (uint16_t)(((uint16_t)resp[6] << 8) | resp[7]);
+    out->chip_rev = resp[8];
+    return ESP_OK;
+}
+
+bool si4732_using_crystal(void)
+{
+    return s_use_crystal;
 }
 
 /* ============================ 音量 / 静音 ============================ */
@@ -574,7 +640,7 @@ esp_err_t si4732_set_band(si4732_band_t band)
 static esp_err_t si4732_patch_power_up(void)
 {
     const uint8_t arg1 = (uint8_t)(0x20 |                                  /* PATCH = 1 */
-                                   (SI4732_SSB_PATCH_XOSCEN ? 0x10 : 0x00) |
+                                   (s_use_crystal ? 0x10 : 0x00) |
                                    0x01);                                  /* FUNC = AM */
     const uint8_t cmd[3] = { CMD_POWER_UP, arg1, 0x05 };
 
@@ -794,7 +860,15 @@ esp_err_t si4732_init(void)
     ESP_RETURN_ON_ERROR(gpio_config(&gpo_cfg), TAG, "配置 GPO1 引脚失败");
 
     ESP_RETURN_ON_ERROR(si4732_bus_attach(), TAG, "挂载 I2C 设备失败");
-    ESP_RETURN_ON_ERROR(si4732_reset(), TAG, "硬件复位失败");
+
+    /* 复位握手失败不直接放弃：有些模块只有上电后参考时钟才起振，
+     * 交给 si4732_power_up() 的时钟模式自动重试处理 */
+    const esp_err_t reset_err = si4732_reset();
+    if (reset_err != ESP_OK) {
+        ESP_LOGW(TAG, "复位握手失败(%s)，继续尝试上电",
+                 esp_err_to_name(reset_err));
+    }
+
     ESP_RETURN_ON_ERROR(si4732_power_up(SI4732_BAND_FM), TAG, "上电失败");
     ESP_RETURN_ON_ERROR(si4732_set_mute(false), TAG, "解除静音失败");
     ESP_RETURN_ON_ERROR(si4732_set_volume(s_volume), TAG, "设置初始音量失败");
@@ -802,6 +876,15 @@ esp_err_t si4732_init(void)
     uint32_t default_khz = 0;
     si4732_band_info(SI4732_BAND_FM, NULL, NULL, NULL, &default_khz);
     s_freq_khz = default_khz;
+
+    si4732_firmware_t fw;
+    if (si4732_get_firmware(&fw) == ESP_OK) {
+        ESP_LOGI(TAG, "芯片信息: PN=0x%02X FW=%u.%u PATCH=0x%04X COMP=0x%04X REV=0x%02X",
+                 (unsigned)fw.part_number, (unsigned)fw.fw_major, (unsigned)fw.fw_minor,
+                 (unsigned)fw.patch_id, (unsigned)fw.component_id, (unsigned)fw.chip_rev);
+    } else {
+        ESP_LOGW(TAG, "读取芯片版本失败（GET_REV 异常）");
+    }
 
     ESP_LOGI(TAG, "初始化完成: I2C 0x%02X，REFCLK %dHz，音量 %u",
              SI4732_I2C_ADDR, SI4732_REFCLK_HZ, (unsigned)s_volume);

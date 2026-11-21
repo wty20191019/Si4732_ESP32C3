@@ -85,6 +85,31 @@ static const char *adjust_name(adjust_mode_t mode)
     }
 }
 
+static const char *i2c_device_name(uint8_t addr)
+{
+    switch (addr) {
+    case 0x22:          return "Si4732";
+    case 0x3C:
+    case 0x3D:          return "OLED";
+    default:            return "未知";
+    }
+}
+
+/* 扫描 I2C 总线并按设备名打印，用于上电和 diag 命令排查 */
+static void i2c_scan_report(void)
+{
+    uint8_t addrs[16] = {0};
+    const size_t found = board_i2c_scan(addrs, sizeof(addrs));
+
+    ESP_LOGI(TAG, "I2C 设备: %u 个", (unsigned)found);
+    for (size_t i = 0; i < found && i < sizeof(addrs); i++) {
+        ESP_LOGI(TAG, "  0x%02X  %s", addrs[i], i2c_device_name(addrs[i]));
+    }
+    if (found == 0) {
+        ESP_LOGW(TAG, "总线上没有设备，检查供电与 SDA/SCL 接线");
+    }
+}
+
 /* 进入 SSB：FM 波段先切到 SW，再让芯片加载补丁并进入边带模式 */
 static void radio_enter_ssb(bool usb)
 {
@@ -170,6 +195,8 @@ static void radio_task(void *arg)
 {
     (void)arg;
 
+    int fail_count = 0;
+
     /* 上电初始化，失败则周期性重试（方便接线排查） */
     while (!s_radio_ready) {
         if (si4732_init() == ESP_OK) {
@@ -180,6 +207,13 @@ static void radio_task(void *arg)
             }
             status_refresh();
         } else {
+            fail_count++;
+            if (fail_count == 3) {
+                ESP_LOGE(TAG, "Si4732 连续初始化失败，请检查："
+                              "1) SENB 是否接 GND 2) VDD 是否 3.3V "
+                              "3) SDA/SCL 是否有 4.7k 上拉 4) RST 接线 "
+                              "5) 模块若是晶振版，RCLK 可不接");
+            }
             ESP_LOGW(TAG, "Si4732 初始化失败，%dms 后重试", RADIO_RETRY_MS);
             vTaskDelay(pdMS_TO_TICKS(RADIO_RETRY_MS));
         }
@@ -428,6 +462,7 @@ static void console_help(void)
     ESP_LOGI(TAG, "命令: f101100(FM kHz) a1000(MW) s9700(SW) l200(LW)");
     ESP_LOGI(TAG, "      fm/am/sw/lw 切换波段 | v 状态 | vol40 音量 | +/- 搜台");
     ESP_LOGI(TAG, "      usb/lsb 进入 SSB | ssb0 退出 SSB | bfo150 设置BFO(Hz) | bw0..5 带宽");
+    ESP_LOGI(TAG, "      i2c/diag 扫描总线并打印芯片状态");
 }
 
 static void console_handle_line(char *line)
@@ -446,6 +481,17 @@ static void console_handle_line(char *line)
 
     if (!strcmp(line, "v")) {
         console_print_status();
+        return;
+    }
+
+    if (!strcmp(line, "i2c") || !strcmp(line, "diag")) {
+        i2c_scan_report();
+        ESP_LOGI(TAG, "Si4732: %s，时钟模式: %s",
+                 s_radio_ready ? "已就绪" : "未就绪",
+                 si4732_using_crystal() ? "板载晶振" : "外部 RCLK");
+        if (s_radio_ready) {
+            console_print_status();
+        }
         return;
     }
 
@@ -654,7 +700,7 @@ void app_main(void)
     }
 
     /* 3. 上电扫描一次，方便确认接线 */
-    (void)board_i2c_scan(NULL, 0);
+    i2c_scan_report();
 
     /* 4. 外设初始化（失败不阻塞启动，各任务内部会重试） */
     if (oled_init(OLED_I2C_ADDR_DEFAULT) != ESP_OK) {

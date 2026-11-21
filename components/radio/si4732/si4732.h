@@ -203,6 +203,30 @@ esp_err_t si4732_set_property(uint16_t prop, uint16_t value);
 esp_err_t si4732_get_property(uint16_t prop, uint16_t *value);
 
 /**
+ * @brief 芯片固件信息（GET_REV 命令）
+ */
+typedef struct {
+    uint8_t part_number;    /* 芯片型号编码 */
+    uint8_t fw_major;       /* 固件主版本 */
+    uint8_t fw_minor;       /* 固件次版本 */
+    uint16_t patch_id;      /* 补丁版本 */
+    uint16_t component_id;  /* 组件版本 */
+    uint8_t chip_rev;       /* 芯片修订号 */
+} si4732_firmware_t;
+
+/**
+ * @brief 读取芯片固件信息（需在 POWER_UP 之后调用）
+ */
+esp_err_t si4732_get_firmware(si4732_firmware_t *out);
+
+/**
+ * @brief 当前使用的时钟模式
+ *
+ * @return true = 板载晶振（XOSCEN=1），false = 外部 RCLK（XOSCEN=0）
+ */
+bool si4732_using_crystal(void);
+
+/**
  * @brief 获取指定波段的频率范围/步进/默认频率
  *
  * @param band        波段
