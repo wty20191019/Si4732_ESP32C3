@@ -233,6 +233,13 @@ esp_err_t si4732_get_firmware(si4732_firmware_t *out);
 void si4732_get_last_error(const char **stage, esp_err_t *err);
 
 /**
+ * @brief 是否正在加载/下载 SSB 补丁
+ *
+ * 补丁下载期间会长时间占用 I2C 总线，扫描等其他访问应跳过。
+ */
+bool si4732_is_patching(void);
+
+/**
  * @brief 当前使用的时钟模式
  *
  * @return true = 板载晶振（XOSCEN=1），false = 外部 RCLK（XOSCEN=0）

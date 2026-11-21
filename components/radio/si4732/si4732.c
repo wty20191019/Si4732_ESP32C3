@@ -54,7 +54,7 @@ static const char *TAG = "SI4732";
 #define TUNE_STATUS_VALID       0x01    /* 调谐/搜台结果有效 */
 
 /* ============================ 时序参数 ============================ */
-#define SI4732_I2C_CLK_HZ           400000  /* 与总线一致，400kHz */
+#define SI4732_I2C_CLK_HZ           100000  /* 与总线一致；400kHz 需要 4.7k 上拉 */
 #define SI4732_XFER_TIMEOUT_MS      50      /* 单次 I2C 传输超时 */
 #define SI4732_CTS_TIMEOUT_MS       1000    /* 等待 CTS 的超时（上电约需 110ms） */
 #define SI4732_TUNE_TIMEOUT_MS      2000    /* 等待调谐完成超时 */
@@ -92,6 +92,9 @@ static si4732_ssb_bandwidth_t s_ssb_bw = SI4732_SSB_BW_1K2;
  * 所以单独保存“最近一次 tune/seek 是否成功完成”。 */
 static bool s_tuned = false;
 
+/* 补丁加载/下载期间为 true，I2C 扫描等操作应跳过 */
+static volatile bool s_patching = false;
+
 /* 最近一次初始化失败信息（OLED 直接显示，方便没有串口时排查） */
 static const char *s_last_stage = "NONE";
 static esp_err_t s_last_error = ESP_OK;
@@ -119,7 +122,12 @@ static esp_err_t si4732_bus_attach(void)
         .device_address = SI4732_I2C_ADDR,
         .scl_speed_hz = SI4732_I2C_CLK_HZ,
     };
+
+    /* 挂设备也会改总线配置，和 OLED/扫描 共用同一把锁 */
+    ESP_RETURN_ON_ERROR(board_i2c_lock(portMAX_DELAY), TAG, "获取 I2C 锁超时");
     const esp_err_t err = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
+    board_i2c_unlock();
+
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "已挂载 I2C 设备 0x%02X @ %dkHz",
                  SI4732_I2C_ADDR, SI4732_I2C_CLK_HZ / 1000);
@@ -903,6 +911,7 @@ esp_err_t si4732_ssb_enable(bool usb)
 
     if (!s_patch_loaded) {
         ESP_LOGI(TAG, "首次进入 SSB，开始加载补丁 ...");
+        s_patching = true;   /* 下载期间禁止扫描总线 */
 
         /* PU2CLR 的补丁流程用 XOSCEN=1；本板无晶振，先按参考实现试，
          * 失败则复位后改用 XOSCEN=0 重试。 */
@@ -923,6 +932,7 @@ esp_err_t si4732_ssb_enable(bool usb)
             }
             s_patch_loaded = false;
             s_ssb_active = false;
+            s_patching = false;
             return err;
         }
 
@@ -940,9 +950,11 @@ esp_err_t si4732_ssb_enable(bool usb)
             ESP_LOGE(TAG, "补丁后恢复正常模式失败: %s", esp_err_to_name(err));
             (void)si4732_reset();
             s_patch_loaded = false;
+            s_patching = false;
             return err;
         }
 
+        s_patching = false;
         ESP_LOGI(TAG, "SSB 补丁加载完成");
     }
 
@@ -972,6 +984,11 @@ esp_err_t si4732_ssb_disable(void)
 bool si4732_ssb_is_active(void)
 {
     return s_ssb_active;
+}
+
+bool si4732_is_patching(void)
+{
+    return s_patching;
 }
 
 bool si4732_ssb_is_usb(void)

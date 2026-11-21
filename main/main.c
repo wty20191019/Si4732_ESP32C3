@@ -118,8 +118,23 @@ static const char *i2c_device_name(uint8_t addr)
 
 static void i2c_scan_report(void)
 {
+    /* 补丁下载期间总线被长时间占用，不扫描 */
+    if (si4732_is_patching()) {
+        ESP_LOGW(TAG, "补丁下载中，跳过 I2C 扫描");
+        return;
+    }
+
     uint8_t addrs[16] = {0};
     const size_t found = board_i2c_scan(addrs, sizeof(addrs));
+
+    /* 正常只有 Si4732 + OLED 两个设备；数量异常说明 SDA 被拉低/短路 */
+    if (found > 8) {
+        ESP_LOGE(TAG, "I2C 扫描异常: 发现 %u 个设备，SDA 可能被拉低或与 SCL 短路",
+                 (unsigned)found);
+        s_i2c_si4732 = false;
+        s_i2c_oled = false;
+        return;
+    }
 
     s_i2c_si4732 = false;
     s_i2c_oled = false;
@@ -135,9 +150,6 @@ static void i2c_scan_report(void)
     }
     if (found == 0) {
         ESP_LOGW(TAG, "总线上没有设备，检查供电与 SDA/SCL 接线");
-    } else if (found > 100) {
-        ESP_LOGW(TAG, "扫描到 %u 个设备：SDA 可能被从机拉低或与 SCL 短路",
-                 (unsigned)found);
     }
 }
 
