@@ -715,6 +715,20 @@ static void radio_task(void *arg)
 
 /* ============================ 显示 ============================ */
 
+/* 画 2px 宽的竖直电平条，底边对齐 bottom，高度 2~9px */
+static void draw_level_bar(u8g2_t *u, uint8_t x, uint8_t bottom,
+                           uint8_t value, uint8_t max_value)
+{
+    if (max_value == 0) {
+        return;
+    }
+    if (value > max_value) {
+        value = max_value;
+    }
+    const uint8_t h = (uint8_t)(2 + ((unsigned)value * 7u) / max_value);
+    u8g2_DrawBox(u, x, (u8g2_uint_t)(bottom - h), 2, h);
+}
+
 static void render_not_ready(u8g2_t *u)
 {
     const char *stage = "?";
@@ -791,19 +805,26 @@ static void render_ui(const si4732_status_t *st)
         snprintf(line, sizeof(line), "%s %s  EDIT %s",
                  band_name(st->band), ssb_name(), field_name(s_field));
     } else if (st->band == SI4732_BAND_FM) {
-        snprintf(line, sizeof(line), "%s %s%s  R%u S%u",
+        snprintf(line, sizeof(line), "%s %s%s",
                  band_name(st->band), ssb_name(),
-                 s_muted ? " M" : "",
-                 (unsigned)st->rssi, (unsigned)st->snr);
+                 s_muted ? " M" : "");
     } else {
         /* AM/SW/LW 显示补丁状态：P:OK = 补丁在跑，P:0 = 未加载/丢失 */
-        snprintf(line, sizeof(line), "%s %s P:%s%s R%u S%u",
+        snprintf(line, sizeof(line), "%s %s P:%s%s",
                  band_name(st->band), ssb_name(),
                  (si4732_get_patch_id() != 0) ? "OK" : "0",
-                 s_muted ? " M" : "",
-                 (unsigned)st->rssi, (unsigned)st->snr);
+                 s_muted ? " M" : "");
     }
     u8g2_DrawStr(u, 0, 31, line);
+
+    /* 右侧 R/S 电平条：每条宽 2px，高 2~9px，底边对齐 y=32 */
+    draw_level_bar(u, 116, 32, st->rssi, 63);
+    draw_level_bar(u, 126, 32, st->snr, 30);
+    u8g2_SetFont(u, u8g2_font_4x6_tf);
+    u8g2_DrawStr(u, 111, 32, "R");
+    u8g2_DrawStr(u, 121, 32, "S");
+    u8g2_SetFont(u, u8g2_font_6x10_tf);
+
     u8g2_DrawHLine(u, 0, 34, OLED_WIDTH);
 
     /* ---------- 下区：3 行 × 2 列，六个字段同时显示 ---------- */

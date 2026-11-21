@@ -135,7 +135,7 @@ idf.py -p COM21 flash monitor # Ctrl+] 退出
 ```
 ┌────────────────────────────┐
 │       14.270000MHz         │  ← 上区：大字频率
-│ SW USB      R32 S09        │  ← 中区：波段/模式/RSSI/SNR
+│ SW USB P:OK         R▮ S▮  │  ← 中区：波段/模式/补丁 + RSSI/SNR 电平条
 ├────────────────────────────┤
 │ BAND SW      VOL  30       │  ← 下区：3 行 × 2 列
 │ BW   2.2k    SSB  USB      │     六个字段同时显示
