@@ -82,6 +82,35 @@ esp_err_t board_i2c_get_bus(i2c_master_bus_handle_t *bus)
     return i2cdev_get_shared_handle(BOARD_I2C_PORT, (void **)bus);
 }
 
+bool board_i2c_lines_idle(void)
+{
+    if (board_i2c_init() != ESP_OK) {
+        return false;
+    }
+    /* i2cdev 已把 SDA/SCL 配成开漏 + 上拉；空闲时应读到高电平 */
+    return gpio_get_level(BOARD_I2C_SDA_GPIO) != 0 &&
+           gpio_get_level(BOARD_I2C_SCL_GPIO) != 0;
+}
+
+bool board_i2c_probe_addr(uint8_t addr)
+{
+    if (board_i2c_init() != ESP_OK) {
+        return false;
+    }
+
+    i2c_dev_t dev = {0};
+    fill_desc(&dev, addr);
+
+    if (board_i2c_lock(pdMS_TO_TICKS(BOARD_I2C_LOCK_TIMEOUT_MS)) != ESP_OK) {
+        return false;
+    }
+
+    const esp_err_t err = i2c_dev_probe(&dev, I2C_DEV_WRITE);
+    board_i2c_unlock();
+
+    return err == ESP_OK;
+}
+
 size_t board_i2c_scan(uint8_t *out_addrs, size_t max_addrs)
 {
     size_t found = 0;

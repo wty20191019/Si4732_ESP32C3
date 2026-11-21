@@ -52,6 +52,20 @@ void board_i2c_unlock(void);
 esp_err_t board_i2c_get_bus(i2c_master_bus_handle_t *bus);
 
 /**
+ * @brief 探测指定 7 位地址是否有从机应答
+ *
+ * @return true 有 ACK
+ */
+bool board_i2c_probe_addr(uint8_t addr);
+
+/**
+ * @brief 检查 SDA/SCL 空闲电平是否都为高
+ *
+ * 总线被拉低或短路时返回 false，可用于在扫描/通信前快速判断总线状态。
+ */
+bool board_i2c_lines_idle(void);
+
+/**
  * @brief 扫描 0x08~0x77 地址空间，找出所有应答的从机
  *
  * @param[out] out_addrs 存放扫描到的 7 位地址，可为 NULL

@@ -124,32 +124,44 @@ static void i2c_scan_report(void)
         return;
     }
 
-    uint8_t addrs[16] = {0};
-    const size_t found = board_i2c_scan(addrs, sizeof(addrs));
-
-    /* 正常只有 Si4732 + OLED 两个设备；数量异常说明 SDA 被拉低/短路 */
-    if (found > 8) {
-        ESP_LOGE(TAG, "I2C 扫描异常: 发现 %u 个设备，SDA 可能被拉低或与 SCL 短路",
-                 (unsigned)found);
+    /* 先看空闲电平：SDA/SCL 被拉低或短路时直接报错，不做全地址扫描 */
+    if (!board_i2c_lines_idle()) {
+        ESP_LOGE(TAG, "I2C 空闲电平异常（SDA=%d SCL=%d），总线被拉低或与 GND 短路",
+                 gpio_get_level(BOARD_I2C_SDA_GPIO),
+                 gpio_get_level(BOARD_I2C_SCL_GPIO));
         s_i2c_si4732 = false;
         s_i2c_oled = false;
         return;
     }
 
-    s_i2c_si4732 = false;
-    s_i2c_oled = false;
-
-    ESP_LOGI(TAG, "I2C 设备: %u 个", (unsigned)found);
-    for (size_t i = 0; i < found && i < sizeof(addrs); i++) {
-        if (addrs[i] == 0x11 || addrs[i] == 0x63) {
-            s_i2c_si4732 = true;
-        } else if (addrs[i] == 0x3C || addrs[i] == 0x3D) {
-            s_i2c_oled = true;
-        }
-        ESP_LOGI(TAG, "  0x%02X  %s", addrs[i], i2c_device_name(addrs[i]));
+    /* 本板只有两个 I2C 设备，直接探测已知地址，不做 0x08~0x77 全扫描 */
+    uint8_t si_addr = 0;
+    if (board_i2c_probe_addr(0x11)) {
+        si_addr = 0x11;
+    } else if (board_i2c_probe_addr(0x63)) {
+        si_addr = 0x63;
     }
-    if (found == 0) {
-        ESP_LOGW(TAG, "总线上没有设备，检查供电与 SDA/SCL 接线");
+
+    uint8_t oled_addr = 0;
+    if (board_i2c_probe_addr(0x3C)) {
+        oled_addr = 0x3C;
+    } else if (board_i2c_probe_addr(0x3D)) {
+        oled_addr = 0x3D;
+    }
+
+    s_i2c_si4732 = (si_addr != 0);
+    s_i2c_oled = (oled_addr != 0);
+
+    if (si_addr != 0) {
+        ESP_LOGI(TAG, "I2C 发现 %s: 0x%02X", i2c_device_name(si_addr), si_addr);
+    } else {
+        ESP_LOGW(TAG, "I2C 未发现 Si4732（0x11/0x63）");
+    }
+
+    if (oled_addr != 0) {
+        ESP_LOGI(TAG, "I2C 发现 %s: 0x%02X", i2c_device_name(oled_addr), oled_addr);
+    } else {
+        ESP_LOGW(TAG, "I2C 未发现 OLED（0x3C/0x3D）");
     }
 }
 
