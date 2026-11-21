@@ -18,6 +18,14 @@ WiFi 网页 / CSV 日志等模块，替换为 Si4732 收音链路。
 - **输入**：EC11 旋转编码器（A/B 相 + 按键）
 - **音频**：Si4732 LOUT/ROUT → PAM8403 → 4Ω 3W 扬声器
 
+### 硬件实物
+
+![Si4732 收音机硬件实物](docs/hardware.jpg)
+
+> 洞洞板原型：ESP32-C3 Super Mini、AMS1117-3.3 稳压模块、Si4732-A10 模块、
+> 显示模块、EC11 编码器、PAM8403 功放与扬声器。
+> 具体接线以“引脚分配”和“当前实测电路状态”为准。
+
 ### 引脚分配
 
 | 编号 | ESP32-C3 | 连接 | 说明 |
@@ -99,6 +107,8 @@ Si4732-A10/
 │  │  └─ oled/                 # 128×64 OLED（u8g2）
 │  ├─ radio/
 │  │  └─ si4732/               # Si4732 驱动（AN332 命令层 + SSB 补丁）
+├─ docs/
+│  └─ hardware.jpg             # 硬件实物照片（README 引用）
 ├─ tools/gen_cpp_properties.ps1
 └─ .vscode/                    # IntelliSense 配置
 ```
