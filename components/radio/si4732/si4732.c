@@ -23,10 +23,12 @@ static const char *TAG = "SI4732";
 #define CMD_FM_TUNE_FREQ        0x20
 #define CMD_FM_SEEK_START       0x21
 #define CMD_FM_TUNE_STATUS      0x22
+#define CMD_FM_RSQ_STATUS       0x23
 
 #define CMD_AM_TUNE_FREQ        0x40
 #define CMD_AM_SEEK_START       0x41
 #define CMD_AM_TUNE_STATUS      0x42
+#define CMD_AM_RSQ_STATUS       0x43
 
 /* ============================ 属性号 ============================ */
 #define PROP_SSB_BFO            0x0100
@@ -632,6 +634,36 @@ static esp_err_t si4732_read_tune_status(bool fm, bool intack, bool *stc,
 }
 
 /**
+ * @brief 读取当前信号质量（AM/FM RSQ_STATUS）
+ *
+ * TUNE_STATUS 里的 RSSI/SNR 是“调谐完成那一刻”的快照，重复读取不会刷新；
+ * RSQ_STATUS 返回 DSP 当前的测量值，适合做实时 S 表。
+ *
+ *   AM/SW/LW/SSB：命令 0x43，响应 6 字节，RESP4=RSSI，RESP5=SNR
+ *   FM：          命令 0x23，响应 8 字节，RESP4=RSSI，RESP5=SNR
+ */
+static esp_err_t si4732_read_rsq(bool fm, uint8_t *rssi, uint8_t *snr)
+{
+    const uint8_t cmd[2] = {
+        fm ? CMD_FM_RSQ_STATUS : CMD_AM_RSQ_STATUS,
+        0x00,   /* ARG1：INTACK=0，不清中断标志 */
+    };
+    uint8_t resp[8] = {0};
+    const size_t len = fm ? 8 : 6;
+
+    ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), resp, len),
+                        TAG, "读取 RSQ 状态失败");
+
+    if (rssi != NULL) {
+        *rssi = resp[4];
+    }
+    if (snr != NULL) {
+        *snr = resp[5];
+    }
+    return ESP_OK;
+}
+
+/**
  * @brief 轮询直到调谐/搜台完成（STC=1）或超时
  *
  * 注意不能等 VALID：VALID 表示“信号达到搜台有效门限”，
@@ -1121,6 +1153,13 @@ esp_err_t si4732_get_status(si4732_status_t *out)
     ESP_RETURN_ON_ERROR(si4732_read_tune_status(si4732_band_is_fm(s_band), false,
                                                 NULL, &valid, &rssi, &snr),
                         TAG, "读取状态失败");
+
+    /* RSSI/SNR 改用 RSQ_STATUS 实时读取；失败时保留 TUNE_STATUS 的快照值 */
+    uint8_t live_rssi = 0, live_snr = 0;
+    if (si4732_read_rsq(si4732_band_is_fm(s_band), &live_rssi, &live_snr) == ESP_OK) {
+        rssi = live_rssi;
+        snr = live_snr;
+    }
 
     out->band = s_band;
     out->freq_khz = s_freq_khz;
