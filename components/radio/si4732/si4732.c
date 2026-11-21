@@ -289,11 +289,12 @@ esp_err_t si4732_reset(void)
 {
     ESP_RETURN_ON_ERROR(si4732_bus_attach(), TAG, "挂载 I2C 设备失败");
 
-    /* AN332：RST 拉低至少 100us，拉高后至少等 30us 才能通信 */
+    /* AN332：RST 拉低至少 100us；这里给 1ms，避免模块上 RC 复位电路
+     * 让低电平不够长；释放后再等 1ms 才轮询 CTS */
     gpio_set_level(BOARD_SI4732_RST_GPIO, 0);
-    esp_rom_delay_us(100);
+    esp_rom_delay_us(1000);
     gpio_set_level(BOARD_SI4732_RST_GPIO, 1);
-    esp_rom_delay_us(30);
+    esp_rom_delay_us(1000);
 
     esp_err_t err = board_i2c_lock(portMAX_DELAY);
     if (err == ESP_OK) {
