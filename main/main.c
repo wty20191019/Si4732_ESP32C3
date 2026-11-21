@@ -164,6 +164,19 @@ static uint8_t step_count_current(void)
     return count;
 }
 
+/* 各波段的默认步进索引（对应 step_table_current 的数组下标）：
+ *   FM：100kHz = 0.1MHz（fm[] 下标 2）
+ *   SW：10kHz  = 0.01MHz（sw_am / sw_ssb 下标都是 3）
+ * 其它波段保持 0。 */
+static uint8_t default_step_index(void)
+{
+    switch (si4732_get_band()) {
+    case SI4732_BAND_FM: return 2;
+    case SI4732_BAND_SW: return 3;
+    default:             return 0;
+    }
+}
+
 static uint32_t step_hz_current(void)
 {
     uint8_t count = 0;
@@ -439,7 +452,7 @@ static void adjust_band(int delta)
     if (si4732_set_band(order[idx]) == ESP_OK) {
         settings_mark_dirty();
     }
-    s_step_idx = 0;
+    s_step_idx = default_step_index();
 }
 
 static void adjust_bw(int delta)
@@ -464,6 +477,7 @@ static void adjust_ssb(int delta)
                 return;
             }
             settings_mark_dirty();
+            s_step_idx = default_step_index();
         }
         if (si4732_ssb_enable(forward) != ESP_OK) {
             ESP_LOGE(TAG, "进入 SSB 失败");
@@ -486,7 +500,7 @@ static void adjust_ssb(int delta)
 
     const uint8_t n = step_count_current();
     if (s_step_idx >= n) {
-        s_step_idx = 0;
+        s_step_idx = default_step_index();
     }
 }
 
@@ -541,6 +555,9 @@ static void radio_apply_boot_settings(void)
                  band_name(band), (unsigned long)default_khz);
         (void)si4732_tune(default_khz);
     }
+
+    /* 开机后按当前波段套用默认步进：FM 0.1MHz / SW 0.01MHz */
+    s_step_idx = default_step_index();
 
     ESP_LOGI(TAG, "开机默认: %s %lukHz VOL %u %s BW %s SSB OFF",
              band_name(si4732_get_band()),
@@ -681,7 +698,7 @@ static void radio_task(void *arg)
                 if (s_field == FIELD_FREQ) {
                     const uint8_t n = step_count_current();
                     if (s_step_idx >= n) {
-                        s_step_idx = 0;
+                        s_step_idx = default_step_index();
                     }
                 }
             } else {
