@@ -34,6 +34,7 @@ static const char *TAG = "SI4732";
 /* ============================ 属性号 ============================ */
 #define PROP_SSB_BFO            0x0100
 #define PROP_SSB_MODE           0x0101
+#define PROP_SSB_SOFT_MUTE_MAX_ATTENUATION 0x3302
 #define PROP_REFCLK_FREQ        0x0201
 #define PROP_REFCLK_PRESCALE    0x0202
 #define PROP_FM_SEEK_BAND_BOTTOM 0x1400
@@ -911,8 +912,14 @@ static esp_err_t si4732_apply_ssb_mode(void)
                                        (0x00 << 5) |              /* SMUTESEL = 0 */
                                        (0x01 << 7));              /* DSP_AFCDIS = 1 */
 
-    return si4732_set_property(PROP_SSB_MODE,
-                               (uint16_t)(((uint16_t)avc_byte << 8) | audio_byte));
+    const esp_err_t err = si4732_set_property(PROP_SSB_MODE,
+                                              (uint16_t)(((uint16_t)avc_byte << 8) | audio_byte));
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    /* 关闭 SSB 软静音，排除 SNR=0 时被软静音压掉音频 */
+    return si4732_set_property(PROP_SSB_SOFT_MUTE_MAX_ATTENUATION, 0);
 }
 
 esp_err_t si4732_ssb_enable(bool usb)
