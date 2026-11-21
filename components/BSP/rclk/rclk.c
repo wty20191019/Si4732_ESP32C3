@@ -4,7 +4,6 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "driver/ledc.h"
-#include "freertos/FreeRTOS.h"
 
 static const char *TAG = "RCLK";
 
@@ -57,16 +56,6 @@ esp_err_t rclk_start(void)
 
     s_running = true;
     return ESP_OK;
-}
-
-void rclk_stop(void)
-{
-    if (!s_running) {
-        return;
-    }
-    (void)ledc_stop(RCLK_LEDC_SPEED_MODE, RCLK_LEDC_CHANNEL, 0);
-    s_running = false;
-    ESP_LOGI(TAG, "32.768kHz 参考时钟已停止");
 }
 
 bool rclk_is_running(void)

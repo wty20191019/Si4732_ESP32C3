@@ -1,5 +1,7 @@
 #include "oled_display.h"
 
+#include <stdbool.h>
+
 #include "board.h"
 #include "board_i2c.h"
 #include "esp32_hw_i2c.h"
@@ -9,16 +11,9 @@
 
 static const char *TAG = "OLED";
 
-#define SSD1306_CMD_NORMAL_DISPLAY  0xA6
-#define SSD1306_CMD_INVERSE_DISPLAY 0xA7
-
 static u8g2_t s_u8g2;
 static u8g2_esp32_i2c_ctx_t s_ctx;
 static bool s_ready = false;
-static uint8_t s_contrast = OLED_CONTRAST_DEFAULT;
-static bool s_invert = false;
-
-static void oled_apply_invert_locked(bool enable);
 
 esp_err_t oled_init(uint8_t addr)
 {
@@ -53,8 +48,7 @@ esp_err_t oled_init(uint8_t addr)
     ESP_RETURN_ON_ERROR(board_i2c_lock(pdMS_TO_TICKS(1000)), TAG, "获取 I2C 锁超时");
     u8g2_InitDisplay(&s_u8g2);
     u8g2_SetPowerSave(&s_u8g2, 0);
-    u8g2_SetContrast(&s_u8g2, s_contrast);   /* 应用默认亮度 */
-    oled_apply_invert_locked(s_invert);      /* 应用反色状态 */
+    u8g2_SetContrast(&s_u8g2, OLED_CONTRAST_DEFAULT);
     u8g2_ClearBuffer(&s_u8g2);
     u8g2_SendBuffer(&s_u8g2);
     board_i2c_unlock();
@@ -62,24 +56,6 @@ esp_err_t oled_init(uint8_t addr)
     s_ready = true;
     ESP_LOGI(TAG, "初始化完成，地址 0x%02X，分辨率 %dx%d", addr, OLED_WIDTH, OLED_HEIGHT);
     return ESP_OK;
-}
-
-void oled_clear(void)
-{
-    if (!s_ready) {
-        return;
-    }
-    u8g2_ClearBuffer(&s_u8g2);
-    oled_refresh();
-}
-
-void oled_draw_str(uint8_t x, uint8_t y, const char *text)
-{
-    if (!s_ready || text == NULL) {
-        return;
-    }
-    u8g2_SetFont(&s_u8g2, u8g2_font_6x10_tf);
-    u8g2_DrawStr(&s_u8g2, x, y, text);
 }
 
 void oled_refresh(void)
@@ -97,50 +73,4 @@ void oled_refresh(void)
 u8g2_t *oled_get_u8g2(void)
 {
     return s_ready ? &s_u8g2 : NULL;
-}
-
-esp_err_t oled_set_contrast(uint8_t value)
-{
-    ESP_RETURN_ON_FALSE(s_ready, ESP_ERR_INVALID_STATE, TAG, "请先调用 oled_init()");
-
-    ESP_RETURN_ON_ERROR(board_i2c_lock(pdMS_TO_TICKS(1000)), TAG, "获取 I2C 锁超时");
-    u8g2_SetContrast(&s_u8g2, value);
-    board_i2c_unlock();
-
-    s_contrast = value;
-    return ESP_OK;
-}
-
-uint8_t oled_get_contrast(void)
-{
-    return s_contrast;
-}
-
-static void oled_apply_invert_locked(bool enable)
-{
-    u8x8_cad_StartTransfer(&s_u8g2.u8x8);
-    u8x8_cad_SendCmd(&s_u8g2.u8x8, enable ? SSD1306_CMD_INVERSE_DISPLAY : SSD1306_CMD_NORMAL_DISPLAY);
-    u8x8_cad_EndTransfer(&s_u8g2.u8x8);
-}
-
-esp_err_t oled_set_invert(bool enable)
-{
-    ESP_RETURN_ON_FALSE(s_ready, ESP_ERR_INVALID_STATE, TAG, "请先调用 oled_init()");
-
-    ESP_RETURN_ON_ERROR(board_i2c_lock(pdMS_TO_TICKS(1000)), TAG, "获取 I2C 锁超时");
-    oled_apply_invert_locked(enable);
-    board_i2c_unlock();
-
-    s_invert = enable;
-    return ESP_OK;
-}
-
-bool oled_get_invert(void)
-{
-    return s_invert;
-}
-
-void oled_deinit(void)
-{
-    s_ready = false;
 }

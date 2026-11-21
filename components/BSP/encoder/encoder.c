@@ -161,10 +161,3 @@ int32_t encoder_get_count(void)
     portEXIT_CRITICAL(&s_event_lock);
     return count;
 }
-
-void encoder_reset_count(void)
-{
-    portENTER_CRITICAL(&s_event_lock);
-    s_detent_count = 0;
-    portEXIT_CRITICAL(&s_event_lock);
-}

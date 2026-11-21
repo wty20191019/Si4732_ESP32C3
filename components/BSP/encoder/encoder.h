@@ -57,11 +57,6 @@ uint32_t encoder_take_events(void);
  */
 int32_t encoder_get_count(void);
 
-/**
- * @brief 清零累计旋转格数
- */
-void encoder_reset_count(void);
-
 #ifdef __cplusplus
 }
 #endif

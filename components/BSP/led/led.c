@@ -1,5 +1,4 @@
 #include "led.h"
-#include "esp_check.h"
 
 // 记录当前 LED 状态，供 led_toggle 使用
 static bool s_is_on = false;
@@ -15,7 +14,7 @@ void led_init(void)
     };
 
     ESP_ERROR_CHECK(gpio_config(&io_conf));     // 应用引脚配置
-    led_off();                                  // 初始化后默认熄灭
+    led_set(false);                             // 初始化后默认熄灭
 }
 
 void led_set(bool on)
@@ -24,16 +23,6 @@ void led_set(bool on)
     int level = on ? LED_ACTIVE_LEVEL : !LED_ACTIVE_LEVEL;
     ESP_ERROR_CHECK(gpio_set_level(LED_GPIO_PIN, level));
     s_is_on = on;
-}
-
-void led_on(void)
-{
-    led_set(true);
-}
-
-void led_off(void)
-{
-    led_set(false);
 }
 
 void led_toggle(void)

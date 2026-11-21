@@ -1,7 +1,5 @@
 #include "si4732.h"
 
-#include <string.h>
-
 #include "board.h"
 #include "board_i2c.h"
 #include "driver/gpio.h"
@@ -21,7 +19,6 @@ static const char *TAG = "SI4732";
 #define CMD_POWER_DOWN          0x11
 #define CMD_SET_PROPERTY        0x12
 #define CMD_GET_PROPERTY        0x13
-#define CMD_GET_INT_STATUS      0x14
 
 #define CMD_FM_TUNE_FREQ        0x20
 #define CMD_FM_SEEK_START       0x21
@@ -63,7 +60,6 @@ static const char *TAG = "SI4732";
 
 /* SSB 补丁参数 */
 #define SI4732_PATCH_LINE_BYTES     8       /* 每行：命令字 + 7 字节数据 */
-#define SI4732_PATCH_DELAY_US       300     /* 每行之间的最小间隔（PU2CLR 取值） */
 #define SI4732_SSB_PATCH_DELAY_MS   50      /* 补丁 POWER_UP 后的稳定时间 */
 
 /* 模块是否自带 32.768kHz 晶振：

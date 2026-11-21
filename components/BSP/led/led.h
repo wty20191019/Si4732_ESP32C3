@@ -21,10 +21,6 @@
 // 初始化 LED 引脚为推挽输出，默认熄灭
 void led_init(void);
 
-// 点亮 / 熄灭 LED
-void led_on(void);
-void led_off(void);
-
 // 按布尔值控制：true 点亮，false 熄灭
 void led_set(bool on);
 

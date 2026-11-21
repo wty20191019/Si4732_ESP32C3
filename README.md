@@ -64,8 +64,6 @@ Si4732-A10/
 │  │  └─ oled/                 # 128×64 OLED（u8g2）
 │  ├─ radio/
 │  │  └─ si4732/               # Si4732 驱动（AN332 命令层 + SSB 补丁）
-│  ├─ filters/                 # 通用二阶低通（预留给 RSSI 平滑）
-│  └─ ui/                      # 通用步进选择器（预留）
 ├─ tools/gen_cpp_properties.ps1
 └─ .vscode/                    # IntelliSense 配置
 ```
@@ -258,7 +256,7 @@ si4732_ssb_disable();           // 回到普通 AM
 - [ ] 频率收藏与掉电保存（NVS：频率、波段、音量、静音状态）
 - [ ] FM 立体声指示（解析 `FM_RSQ_STATUS` 的 STEREO 位）
 - [ ] RDS：`FM_RDS_STATUS` 读取电台名 / 节目类型
-- [ ] RSSI/SNR 二阶低通平滑（复用 `components/filters/biquad_lpf`）
+- [ ] RSSI/SNR 滑动平均平滑（降低读数跳动）
 - [ ] 编码器加速（快速旋转时步进加倍）
 - [ ] 电池供电与低功耗
 

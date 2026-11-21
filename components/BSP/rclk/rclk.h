@@ -28,11 +28,6 @@ extern "C" {
 esp_err_t rclk_start(void);
 
 /**
- * @brief 停止参考时钟输出
- */
-void rclk_stop(void);
-
-/**
  * @brief 查询时钟是否在运行
  */
 bool rclk_is_running(void);

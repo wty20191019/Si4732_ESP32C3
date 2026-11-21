@@ -9,7 +9,6 @@
  * board_i2c_get_bus() 取得同一条总线句柄，不会重复创建控制器。
  */
 
-#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -71,15 +70,6 @@ esp_err_t board_i2c_bus_reset(void);
  * 总线被拉低或短路时返回 false，可用于在扫描/通信前快速判断总线状态。
  */
 bool board_i2c_lines_idle(void);
-
-/**
- * @brief 扫描 0x08~0x77 地址空间，找出所有应答的从机
- *
- * @param[out] out_addrs 存放扫描到的 7 位地址，可为 NULL
- * @param[in]  max_addrs out_addrs 的容量
- * @return 扫描到的设备数量（可能大于 max_addrs）
- */
-size_t board_i2c_scan(uint8_t *out_addrs, size_t max_addrs);
 
 #ifdef __cplusplus
 }
