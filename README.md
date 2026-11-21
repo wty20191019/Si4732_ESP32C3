@@ -22,9 +22,9 @@ WiFi 网页 / CSV 日志等模块，替换为 Si4732 收音链路。
 
 | 编号 | ESP32-C3 | 连接 | 说明 |
 |---|---|---|---|
-| 1 | GPIO1 | Si4732 SDIO + OLED SDA | I2C 数据线，4.7k 上拉到 3V3 |
-| 2 | GPIO2 | Si4732 SCLK + OLED SCL | I2C 时钟线，4.7k 上拉到 3V3 |
-| 3 | GPIO3 | Si4732 GPO1 | 调谐完成中断，内部上拉（当前用轮询，预留） |
+| 1 | GPIO1 | Si4732 SDIO + OLED SDA | I2C 数据线，**10 kΩ 上拉到 3V3** |
+| 2 | GPIO2 | Si4732 SCLK + OLED SCL | I2C 时钟线，4.7–10 kΩ 上拉到 3V3 |
+| 3 | GPIO3 | Si4732 GPO1（4 脚） | 复位时由固件推挽拉高，保证 GPO1=1；运行时轮询，不用中断 |
 | 4 | GPIO4 | Si4732 RST | 复位，高电平正常工作 |
 | 5 | GPIO5 | Si4732 RCLK | LEDC 输出 32.768 kHz |
 | 6 | GPIO6 | EC11 A | 内部上拉 |
@@ -32,16 +32,47 @@ WiFi 网页 / CSV 日志等模块，替换为 Si4732 收音链路。
 | 8 | GPIO8 | 板载 LED | 状态指示 |
 | 9 | GPIO9 | EC11 按键 | BOOT 脚，内部上拉，上电瞬间不要按住 |
 
+> Si4732 的 **INT（GPO2/INT，3 脚）不接 ESP32，而是 10 kΩ 下拉到 GND**。
+> 详见下方“当前实测电路状态”。
+
 I2C 速率默认 **400 kHz**（`components/BSP/board/board.h` 中 `BOARD_I2C_CLK_HZ`）。
 长导线或没有外部上拉时改到 100 kHz。
 
 ### 不能省的硬件
 
-- SDA/SCL 各一个 4.7 kΩ 上拉到 3V3（内部上拉太弱）
+- SDA/SCL 各一个 4.7–10 kΩ 上拉到 3V3（内部上拉太弱；当前实测 SDA 用 10 kΩ）
+- Si4732 **INT（GPO2/INT，3 脚）10 kΩ 下拉到 GND**（否则可能被采样成 SPI，I2C 不稳定）
 - FMI 串联 1 nF C0G 耦合电容
 - RST 不能悬空
 - SENB 接地（7 位地址 0x11）
-- VDD 只能接 3.3 V
+- VDD 只能接 3.3 V，且必须稳定（两节 1.5 V 干电池带不动）
+
+### 当前实测电路状态
+
+| 引脚 | 接法 | 作用 |
+|---|---|---|
+| **INT（GPO2/INT，3 脚）** | **10 kΩ 下拉到 GND** | RST 上升沿采样为 0，选中 2-wire；悬空或受干扰时可能进 SPI，I2C 时好时坏 |
+| **GPIO1 / SDA** | **10 kΩ 上拉到 VDD（3.3 V）** | 外部上拉必须可靠，仅靠内部上拉会偶发 NACK |
+| GPO1（4 脚） | GPIO3 复位时推挽拉高，之后释放为输入上拉 | 保证 GPO1=1，配合 INT=0 选中 2-wire |
+| SENB | GND | 7 位 I2C 地址 0x11 |
+
+**实测结论：**
+
+- 上面这套接法下，芯片可以被**正常识别（0x11）并稳定工作**：调谐、FM/AM/SW、SSB 补丁都正常；
+- **其他状态不稳定**，常见现象：
+  - 芯片时有时无、I2C NACK、开机偶发识别失败；
+  - INT 悬空或被上拉时，可能被采样成 **SPI 模式**，完全不响应 I2C；
+  - GPO1 被下拉到 GND 时，会进 **3-wire 模式**，同样不响应 I2C；
+  - SDA/SCL 只有内部上拉时，400 kHz 下波形上升沿太慢，容易误码。
+
+### 供电
+
+- **两节 1.5 V 干电池带不动**：标称 3.0 V，带载后会跌到 2.7 V 以下，
+  ESP32-C3 + OLED + Si4732 一起工作时会复位、掉 I2C、屏幕闪烁；
+- 需要稳定 **3.3 V**：
+  - USB / 充电宝 + LDO（AMS1117-3.3、ME6211 等）；
+  - 或 3.7 V 锂电池 + LDO；
+  - VDD 附近加 **10 µF + 100 nF** 去耦，Si4732 的 VDD 单独走线更稳。
 
 ## 目录结构
 
@@ -197,7 +228,8 @@ Si4732-A10 与 Si4735-D60 同 die，支持通过补丁开启 SSB：
      补丁 ID **0x9D29**，来源 Pocket-FT8 / SI4735 Touchscreen 工程）
      按 8 字节一行、每行等待 CTS 下载到芯片内部 RAM
    - 写 `SSB_MODE`（带宽/边带滤波/AVC/AFC）和 `SSB_BFO`
-   - 按普通 AM 模式重新上电，然后以 `AM_TUNE_FREQ` 的 ARG1 **D7:D6 边带位**调谐
+   - 补丁最后一行 CTS 置高即完成 boot（AN332 7.2.2，不再重复 POWER_UP），
+     随后重新写 REFCLK/音量，并以 `AM_TUNE_FREQ` 的 ARG1 **D7:D6 边带位**调谐
      （`10`=USB，`01`=LSB；与 PU2CLR 库一致）
 2. 补丁保存在芯片 RAM，**掉电或复位后丢失**；切换 FM/AM 不需要重新下载
 3. 完整补丁约 2000 行，400 kHz 下下载约 2~4 秒；期间 UI 暂停刷新、跳过总线扫描
@@ -236,10 +268,10 @@ si4732_ssb_disable();           // 回到普通 AM
 6. `FM_TUNE_FREQ` 必须带 4 个参数（最后一个 `ANTCAP=0` 表示自动）；`AM_TUNE_FREQ` / `AM_SEEK_START` 带满 6 字节，ANTCAPL 在短波（>1800 kHz）时置 1
 7. 每次切换波段都会写入 seek 上下限与步进（FM 属性单位 10 kHz），避免 SW/LW 搜台跑回中波范围
 8. 音量与静音分离：`si4732_set_volume()` 只写 RX_VOLUME，静音用 `si4732_set_mute()`
-9. SSB 补丁：PATCH 模式上电 → 8 字节/行、300 µs 间隔下载 → 写 `SSB_MODE`/`SSB_BFO`
-   → 正常 AM 模式重新上电 → `AM_TUNE_FREQ` 的 ARG1[5:4] 选择边带（01=LSB，10=USB）
-10. `SSB_BFO` 是有符号 Hz，写成 16 位补码；`SSB_MODE` 高字节是
-    `AUDIOBW[3:0] | SBCUTFLT[7:4]`，低字节是 `AVC_DIVIDER/AVCEN/SMUTESEL/DSP_AFCDIS`
+9. SSB 补丁：PATCH 模式上电 → 8 字节/行、每行等 CTS 下载 → 写 `SSB_MODE`/`SSB_BFO`
+   → 正常 AM 模式重新上电 → `AM_TUNE_FREQ` 的 **ARG1 D7:D6** 选择边带（01=LSB，10=USB）
+10. `SSB_BFO` 是有符号 Hz，写成 16 位补码；`SSB_MODE` **高字节**是
+    `AVC_DIVIDER / AVCEN / SMUTESEL / DSP_AFCDIS`，**低字节**是 `AUDIOBW[3:0] | SBCUTFLT[7:4]`
 11. **总线模式在 RST 上升沿由 GPO1/GPO2 采样决定**（AN332 第 6 节）：
     2-wire 要求 GPO1=1、GPO2=0。驱动在复位前把 GPO1（GPIO3）推挽拉高，
     RST 上升 50 µs 后再释放为输入上拉，避免落进 3-wire 模式导致 I2C 完全不应答
@@ -267,7 +299,8 @@ si4732_ssb_disable();           // 回到普通 AM
 ## 调试顺序
 
 1. 上电看日志：`I2C 扫描` 应出现 `0x11`（Si4732）和 `0x3C`（OLED）
-2. 若没有 0x11：查 SENB 是否接地、RST 是否被拉低、SDA/SCL 上拉
+2. 若没有 0x11：查 SENB 是否接地、RST 是否被拉低、**SDA 10 kΩ 上拉**、
+   **INT（GPO2/INT，3 脚）10 kΩ 下拉到 GND**，以及供电是否稳定 3.3 V
 3. 若频率偏移：确认 GPIO5 有 32.768 kHz 波形、`REFCLK_FREQ` 设置为 32768
 4. 串口发 `f101100`，听扬声器是否有声音
 5. 切 `am` + `a1000` 测磁棒天线
@@ -279,6 +312,9 @@ si4732_ssb_disable();           // 回到普通 AM
 | 现象 | 原因 / 处理 |
 |---|---|
 | I2C 扫描不到 0x11 | SENB 未接地、RST 悬空、上拉缺失、模块没供电 |
+| 芯片时有时无 / 偶发 NACK | **INT（3 脚）悬空或被上拉** → 10 kΩ 下拉到 GND；**SDA 只有内部上拉** → 加 10 kΩ 到 3V3 |
+| 加/拔 INT 后 I2C 完全无响应 | INT 被上拉时芯片采样成 **SPI 模式**；INT 被下拉（0）且 GPO1=0 时进 **3-wire**。2-wire 必须 INT=0、GPO1=1 |
+| 两节 1.5 V 干电池供电不稳定 | 标称 3.0 V，带载跌破 2.7 V；需要稳定 3.3 V（USB/充电宝 + LDO，或 3.7 V 锂电 + LDO） |
 | 频率整体偏移 | RCLK 没输出或 `REFCLK_FREQ` 没设成 32768 |
 | 调谐总超时 | 芯片未正常上电（检查 POWER_UP 后的 CTS），或天线/波段不匹配 |
 | OLED 花屏 | I2C 速率过高，把 `BOARD_I2C_CLK_HZ` 降到 400k 以下 |
