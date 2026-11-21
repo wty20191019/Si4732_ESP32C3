@@ -47,6 +47,8 @@ static const char *TAG = "app";
 typedef enum {
     ADJ_TUNE = 0,       /* 编码器调节频率 */
     ADJ_VOLUME,         /* 编码器调节音量 */
+    ADJ_USB,            /* SSB 上边带，编码器 1kHz 调谐 */
+    ADJ_LSB,            /* SSB 下边带，编码器 1kHz 调谐 */
 } adjust_mode_t;
 
 static SemaphoreHandle_t s_status_lock = NULL;
@@ -69,6 +71,38 @@ static const char *band_name(si4732_band_t band)
     case SI4732_BAND_SW: return "SW";
     case SI4732_BAND_LW: return "LW";
     default:             return "??";
+    }
+}
+
+static const char *adjust_name(adjust_mode_t mode)
+{
+    switch (mode) {
+    case ADJ_TUNE:   return "TUNE";
+    case ADJ_VOLUME: return "VOL";
+    case ADJ_USB:    return "USB";
+    case ADJ_LSB:    return "LSB";
+    default:         return "?";
+    }
+}
+
+/* 进入 SSB：FM 波段先切到 SW，再让芯片加载补丁并进入边带模式 */
+static void radio_enter_ssb(bool usb)
+{
+    if (!s_radio_ready) {
+        ESP_LOGW(TAG, "Si4732 尚未就绪");
+        return;
+    }
+
+    if (si4732_get_band() == SI4732_BAND_FM) {
+        ESP_LOGI(TAG, "SSB 需要 AM 波段，先切换到 SW");
+        if (si4732_set_band(SI4732_BAND_SW) != ESP_OK) {
+            ESP_LOGE(TAG, "切换到 SW 失败");
+            return;
+        }
+    }
+
+    if (si4732_ssb_enable(usb) != ESP_OK) {
+        ESP_LOGE(TAG, "进入 SSB %s 失败", usb ? "USB" : "LSB");
     }
 }
 
@@ -161,9 +195,14 @@ static void radio_task(void *arg)
         last_count = count;
 
         if (delta != 0) {
-            if (s_adjust_mode == ADJ_TUNE) {
+            const bool ssb_mode = (s_adjust_mode == ADJ_USB || s_adjust_mode == ADJ_LSB);
+
+            if (s_adjust_mode == ADJ_TUNE || ssb_mode) {
                 uint32_t min_khz = 0, max_khz = 0, step_khz = 0;
                 si4732_band_info(si4732_get_band(), &min_khz, &max_khz, &step_khz, NULL);
+                if (ssb_mode) {
+                    step_khz = 1;   /* SSB 用 1kHz 步进，细调交给 BFO */
+                }
 
                 int64_t freq = (int64_t)si4732_get_frequency() + (int64_t)delta * (int64_t)step_khz;
                 if (freq < (int64_t)min_khz) {
@@ -193,13 +232,29 @@ static void radio_task(void *arg)
         const uint32_t events = encoder_take_events();
 
         if (events & ENCODER_EVENT_SW_SHORT) {
+            if (si4732_ssb_is_active()) {
+                (void)si4732_ssb_disable();
+            }
+            if (s_adjust_mode == ADJ_USB || s_adjust_mode == ADJ_LSB) {
+                s_adjust_mode = ADJ_TUNE;
+            }
             radio_next_band();
             status_refresh();
         }
         if (events & ENCODER_EVENT_SW_LONG) {
-            s_adjust_mode = (s_adjust_mode == ADJ_TUNE) ? ADJ_VOLUME : ADJ_TUNE;
+            /* 长按循环：调谐 -> 音量 -> USB -> LSB -> 调谐 */
+            const adjust_mode_t next = (adjust_mode_t)(((int)s_adjust_mode + 1) % 4);
+            s_adjust_mode = next;
+
+            if (next == ADJ_USB || next == ADJ_LSB) {
+                radio_enter_ssb(next == ADJ_USB);
+            } else if (si4732_ssb_is_active()) {
+                (void)si4732_ssb_disable();
+            }
+
             s_status_dirty = true;
-            ESP_LOGI(TAG, "编码器模式: %s", (s_adjust_mode == ADJ_TUNE) ? "调谐" : "音量");
+            status_refresh();
+            ESP_LOGI(TAG, "编码器模式: %s", adjust_name(s_adjust_mode));
         }
 
         /* ---------- 周期刷新状态 ---------- */
@@ -235,7 +290,10 @@ static void render_status(const si4732_status_t *st, adjust_mode_t mode)
         return;
     }
 
-    if (st->band == SI4732_BAND_FM) {
+    if (st->ssb_active) {
+        snprintf(line, sizeof(line), "%s %lukHz %s", band_name(st->band),
+                 (unsigned long)st->freq_khz, st->ssb_usb ? "USB" : "LSB");
+    } else if (st->band == SI4732_BAND_FM) {
         snprintf(line, sizeof(line), "%s %lu.%02luMHz", band_name(st->band),
                  (unsigned long)(st->freq_khz / 1000),
                  (unsigned long)((st->freq_khz % 1000) / 10));
@@ -249,10 +307,15 @@ static void render_status(const si4732_status_t *st, adjust_mode_t mode)
     u8g2_DrawStr(u, 0, 24, line);
 
     snprintf(line, sizeof(line), "VOL %2u  %s", (unsigned)st->volume,
-             (mode == ADJ_TUNE) ? "TUNE" : "VOL");
+             adjust_name(mode));
     u8g2_DrawStr(u, 0, 38, line);
 
-    u8g2_DrawStr(u, 0, 52, st->valid ? "SHORT=BAND LONG=MODE" : "TUNING...");
+    if (st->ssb_active) {
+        snprintf(line, sizeof(line), "BFO %+dHz", (int)st->bfo_hz);
+        u8g2_DrawStr(u, 0, 52, line);
+    } else {
+        u8g2_DrawStr(u, 0, 52, st->valid ? "SHORT=BAND LONG=MODE" : "TUNING...");
+    }
 
     oled_refresh();
 }
@@ -301,12 +364,20 @@ static void console_print_status(void)
         return;
     }
 
-    ESP_LOGI(TAG, "%s %lu.%03lu MHz  RSSI %u  SNR %u  VOL %u  %s",
-             band_name(st.band),
-             (unsigned long)(st.freq_khz / 1000),
-             (unsigned long)(st.freq_khz % 1000),
-             (unsigned)st.rssi, (unsigned)st.snr, (unsigned)st.volume,
-             st.valid ? "LOCK" : "NO LOCK");
+    if (st.ssb_active) {
+        ESP_LOGI(TAG, "%s %lukHz %s  RSSI %u  SNR %u  VOL %u  BFO %+dHz  %s",
+                 band_name(st.band), (unsigned long)st.freq_khz,
+                 st.ssb_usb ? "USB" : "LSB",
+                 (unsigned)st.rssi, (unsigned)st.snr, (unsigned)st.volume,
+                 (int)st.bfo_hz, st.valid ? "LOCK" : "NO LOCK");
+    } else {
+        ESP_LOGI(TAG, "%s %lu.%03lu MHz  RSSI %u  SNR %u  VOL %u  %s",
+                 band_name(st.band),
+                 (unsigned long)(st.freq_khz / 1000),
+                 (unsigned long)(st.freq_khz % 1000),
+                 (unsigned)st.rssi, (unsigned)st.snr, (unsigned)st.volume,
+                 st.valid ? "LOCK" : "NO LOCK");
+    }
 }
 
 static void console_set_band(si4732_band_t band)
@@ -319,6 +390,35 @@ static void console_set_band(si4732_band_t band)
         ESP_LOGE(TAG, "切换波段失败");
         return;
     }
+    if (s_adjust_mode == ADJ_USB || s_adjust_mode == ADJ_LSB) {
+        s_adjust_mode = ADJ_TUNE;
+    }
+    status_refresh();
+    console_print_status();
+}
+
+static void console_set_ssb(bool usb)
+{
+    if (!s_radio_ready) {
+        ESP_LOGW(TAG, "Si4732 尚未就绪");
+        return;
+    }
+
+    if (si4732_get_band() == SI4732_BAND_FM) {
+        ESP_LOGI(TAG, "SSB 需要 AM 波段，切换到 SW");
+        if (si4732_set_band(SI4732_BAND_SW) != ESP_OK) {
+            ESP_LOGE(TAG, "切换到 SW 失败");
+            return;
+        }
+    }
+
+    if (si4732_ssb_enable(usb) != ESP_OK) {
+        ESP_LOGE(TAG, "进入 SSB 失败");
+        return;
+    }
+
+    s_adjust_mode = usb ? ADJ_USB : ADJ_LSB;
+    s_status_dirty = true;
     status_refresh();
     console_print_status();
 }
@@ -327,6 +427,7 @@ static void console_help(void)
 {
     ESP_LOGI(TAG, "命令: f101100(FM kHz) a1000(MW) s9700(SW) l200(LW)");
     ESP_LOGI(TAG, "      fm/am/sw/lw 切换波段 | v 状态 | vol40 音量 | +/- 搜台");
+    ESP_LOGI(TAG, "      usb/lsb 进入 SSB | ssb0 退出 SSB | bfo150 设置BFO(Hz) | bw0..5 带宽");
 }
 
 static void console_handle_line(char *line)
@@ -352,6 +453,50 @@ static void console_handle_line(char *line)
     if (!strcmp(line, "am")) { console_set_band(SI4732_BAND_AM); return; }
     if (!strcmp(line, "sw")) { console_set_band(SI4732_BAND_SW); return; }
     if (!strcmp(line, "lw")) { console_set_band(SI4732_BAND_LW); return; }
+
+    if (!strcmp(line, "usb")) { console_set_ssb(true); return; }
+    if (!strcmp(line, "lsb")) { console_set_ssb(false); return; }
+
+    if (!strcmp(line, "ssb0") || !strcmp(line, "am0")) {
+        if (!s_radio_ready) {
+            ESP_LOGW(TAG, "Si4732 尚未就绪");
+            return;
+        }
+        if (si4732_ssb_disable() == ESP_OK) {
+            if (s_adjust_mode == ADJ_USB || s_adjust_mode == ADJ_LSB) {
+                s_adjust_mode = ADJ_TUNE;
+            }
+            s_status_dirty = true;
+            status_refresh();
+            console_print_status();
+        }
+        return;
+    }
+
+    if (!strncmp(line, "bfo", 3)) {
+        const int hz = atoi(line + 3);
+        if (hz < -16383 || hz > 16383) {
+            ESP_LOGW(TAG, "BFO 范围 -16383 ~ 16383 Hz");
+            return;
+        }
+        if (s_radio_ready && si4732_ssb_set_bfo((int16_t)hz) == ESP_OK) {
+            ESP_LOGI(TAG, "BFO = %+d Hz", hz);
+            status_refresh();
+        }
+        return;
+    }
+
+    if (!strncmp(line, "bw", 2)) {
+        const int bw = atoi(line + 2);
+        if (bw < 0 || bw > (int)SI4732_SSB_BW_1K0) {
+            ESP_LOGW(TAG, "SSB 带宽 0~5");
+            return;
+        }
+        if (si4732_ssb_set_bandwidth((si4732_ssb_bandwidth_t)bw) == ESP_OK) {
+            ESP_LOGI(TAG, "SSB 音频带宽索引 = %d", bw);
+        }
+        return;
+    }
 
     if (!strncmp(line, "vol", 3)) {
         const int volume = atoi(line + 3);
@@ -409,6 +554,10 @@ static void console_handle_line(char *line)
         if (si4732_set_band(band) != ESP_OK || si4732_tune(freq) != ESP_OK) {
             ESP_LOGE(TAG, "调谐失败");
             return;
+        }
+        if (!si4732_ssb_is_active() &&
+            (s_adjust_mode == ADJ_USB || s_adjust_mode == ADJ_LSB)) {
+            s_adjust_mode = ADJ_TUNE;
         }
         status_refresh();
         console_print_status();
