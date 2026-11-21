@@ -314,11 +314,39 @@ esp_err_t si4732_reset(void)
 {
     ESP_RETURN_ON_ERROR(si4732_bus_attach(), TAG, "挂载 I2C 设备失败");
 
+    /* AN332 第 6 节：芯片在 RST 上升沿采样 GPO1 / GPO2 选择总线模式：
+     *   2-wire: GPO1 = 1, GPO2 = 0
+     *   3-wire: GPO1 = 0, GPO2 = 0
+     * GPO1 内部只有 1MΩ 上拉，不能只依赖它——这里把 GPIO3 推挽强驱动为高，
+     * 否则芯片可能进入 3-wire 模式，I2C 永远 NACK。 */
+    const gpio_config_t gpo_force_high = {
+        .pin_bit_mask = 1ULL << BOARD_SI4732_GPO1_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    ESP_RETURN_ON_ERROR(gpio_config(&gpo_force_high), TAG, "配置 GPO1 失败");
+    gpio_set_level(BOARD_SI4732_GPO1_GPIO, 1);
+    esp_rom_delay_us(100);     /* AN332 要求 >=30ns，这里给 100us */
+
     /* AN332：RST 拉低至少 100us；这里给 1ms，避免模块上 RC 复位电路
-     * 让低电平不够长；释放后再等 1ms 让芯片稳定 */
+     * 让低电平不够长 */
     gpio_set_level(BOARD_SI4732_RST_GPIO, 0);
     esp_rom_delay_us(1000);
-    gpio_set_level(BOARD_SI4732_RST_GPIO, 1);
+    gpio_set_level(BOARD_SI4732_RST_GPIO, 1);   /* 上升沿采样总线模式 */
+    esp_rom_delay_us(50);
+
+    /* 采样完成后释放 GPO1，切回输入上拉（用于后续 STC 中断） */
+    const gpio_config_t gpo_input = {
+        .pin_bit_mask = 1ULL << BOARD_SI4732_GPO1_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    (void)gpio_config(&gpo_input);
+
     esp_rom_delay_us(1000);
 
     /* 复位后芯片进入 powerdown，此时读状态会 NACK，这是正常现象，
