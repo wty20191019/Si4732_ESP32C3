@@ -142,10 +142,22 @@ si4732_set_property(prop, v);  // AN332 通用属性
 实现要点：
 
 1. 每条命令前/后都轮询 STATUS 的 CTS 位（bit7），ERR 位（bit6）置位时报错
-2. `POWER_UP` 参数：FM 用 `FUNC=0`，AM/SW/LW 用 `FUNC=1`，OPMODE=0x05（模拟输出）
+2. `POWER_UP` 参数：FM 用 `FUNC=0`，AM/SW/LW 用 `FUNC=1`，OPMODE=0x05（模拟输出），XOSCEN=0（外部 RCLK）
 3. 上电后设置 `REFCLK_FREQ=32768`、`REFCLK_PRESCALE=1`，否则频率整体偏移
 4. FM 与 AM 模式切换需要重新 `POWER_UP`；MW/SW/LW 之间只改频率
 5. TUNE_STATUS 的 READFREQ：FM 单位 10 kHz，AM 单位 kHz
+6. `AM_TUNE_FREQ` / `AM_SEEK_START` 按 AN332 带满 6 字节，ANTCAP 在短波（>1800 kHz）时置 1
+7. 每次切换波段都会写入 seek 上下限与步进（FM 属性单位 10 kHz），避免 SW/LW 搜台跑回中波范围
+8. 音量与静音分离：`si4732_set_volume()` 只写 RX_VOLUME，静音用 `si4732_set_mute()`
+
+## 参考资料
+
+| 资料 | 位置 | 用途 |
+|---|---|---|
+| PU2CLR SI4735 Arduino 库 | `D:\Desktop\SI4735` | 命令参数、波段配置、RDS / SSB 实现参考 |
+| AN332 官方示例代码 | `AN332_Si47xxExampleCode/` | 复位时序、CTS 轮询、FM/AM 命令格式 |
+| AN332 编程手册 | `AN332.pdf` | 完整命令与属性定义 |
+| Si4732-A10 数据手册 | `Si4732-A10.pdf` | 引脚、电气参数、RCLK 要求 |
 
 ## 待办路线（骨架之后）
 

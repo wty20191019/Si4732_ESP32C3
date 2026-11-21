@@ -32,8 +32,17 @@ static const char *TAG = "SI4732";
 /* ============================ 属性号 ============================ */
 #define PROP_REFCLK_FREQ        0x0201
 #define PROP_REFCLK_PRESCALE    0x0202
+#define PROP_FM_SEEK_BAND_BOTTOM 0x1400
+#define PROP_FM_SEEK_BAND_TOP    0x1401
+#define PROP_FM_SEEK_FREQ_SPACING 0x1402
+#define PROP_AM_SEEK_BAND_BOTTOM 0x3400
+#define PROP_AM_SEEK_BAND_TOP    0x3401
+#define PROP_AM_SEEK_FREQ_SPACING 0x3402
 #define PROP_RX_VOLUME          0x4000
 #define PROP_RX_HARD_MUTE       0x4001
+
+/* FM 波段属性使用 10kHz 单位，AM 使用 kHz 单位 */
+#define FM_PROP_UNIT_KHZ        10
 
 /* ============================ 状态位 ============================ */
 #define STATUS_CTS              0x80    /* 命令可以接收 */
@@ -193,6 +202,51 @@ void si4732_band_info(si4732_band_t band,
 
 /* ============================ 上电 / 复位 ============================ */
 
+/**
+ * @brief 写入当前波段的搜台范围与步进
+ *
+ * 参考 PU2CLR SI4735 库：setSeekFmLimits / setSeekFmSpacing /
+ * setSeekAmLimits / setSeekAmSpacing。不写这些属性时，芯片使用
+ * 默认的 MW 520~1710kHz，短波/长波搜台会跑回中波范围。
+ */
+static esp_err_t si4732_apply_band_config(si4732_band_t band)
+{
+    uint32_t min_khz = 0, max_khz = 0, step_khz = 0;
+    si4732_band_info(band, &min_khz, &max_khz, &step_khz, NULL);
+
+    if (si4732_band_is_fm(band)) {
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_FM_SEEK_BAND_BOTTOM,
+                                                (uint16_t)(min_khz / FM_PROP_UNIT_KHZ)),
+                            TAG, "设置 FM 搜台下限失败");
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_FM_SEEK_BAND_TOP,
+                                                (uint16_t)(max_khz / FM_PROP_UNIT_KHZ)),
+                            TAG, "设置 FM 搜台上限失败");
+        /* FM 步进属性单位为 10kHz，10 = 100kHz */
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_FM_SEEK_FREQ_SPACING,
+                                                (uint16_t)(step_khz / FM_PROP_UNIT_KHZ)),
+                            TAG, "设置 FM 搜台步进失败");
+    } else {
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_AM_SEEK_BAND_BOTTOM,
+                                                (uint16_t)min_khz),
+                            TAG, "设置 AM 搜台下限失败");
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_AM_SEEK_BAND_TOP,
+                                                (uint16_t)max_khz),
+                            TAG, "设置 AM 搜台上限失败");
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_AM_SEEK_FREQ_SPACING,
+                                                (uint16_t)step_khz),
+                            TAG, "设置 AM 搜台步进失败");
+    }
+
+    ESP_LOGI(TAG, "%s 搜台范围 %lukHz~%lukHz，步进 %lukHz",
+             band == SI4732_BAND_FM ? "FM" :
+             band == SI4732_BAND_AM ? "AM" :
+             band == SI4732_BAND_SW ? "SW" : "LW",
+             (unsigned long)min_khz, (unsigned long)max_khz,
+             (unsigned long)step_khz);
+    return ESP_OK;
+}
+
+
 esp_err_t si4732_reset(void)
 {
     ESP_RETURN_ON_ERROR(si4732_bus_attach(), TAG, "挂载 I2C 设备失败");
@@ -233,6 +287,9 @@ static esp_err_t si4732_power_up(si4732_band_t band)
                         TAG, "设置 REFCLK_FREQ 失败");
     ESP_RETURN_ON_ERROR(si4732_set_property(PROP_REFCLK_PRESCALE, 1),
                         TAG, "设置 REFCLK_PRESCALE 失败");
+
+    /* 搜台范围必须跟着波段走，否则 SW/LW 会跑回 MW 默认范围 */
+    ESP_RETURN_ON_ERROR(si4732_apply_band_config(band), TAG, "配置波段搜台参数失败");
 
     s_powered = true;
     s_band = band;
@@ -293,9 +350,7 @@ esp_err_t si4732_set_volume(uint8_t volume)
         volume = SI4732_VOLUME_MAX;
     }
 
-    /* 先解除硬静音，再设置音量 */
-    ESP_RETURN_ON_ERROR(si4732_set_property(PROP_RX_HARD_MUTE, 0x0000),
-                        TAG, "解除静音失败");
+    /* 与 PU2CLR 库一致：只写 RX_VOLUME，静音由 si4732_set_mute 单独控制 */
     ESP_RETURN_ON_ERROR(si4732_set_property(PROP_RX_VOLUME, volume),
                         TAG, "设置音量失败");
 
@@ -395,14 +450,24 @@ esp_err_t si4732_tune(uint32_t freq_khz)
     const bool fm = si4732_band_is_fm(s_band);
     const uint32_t chip_freq = fm ? (freq_khz / 10) : freq_khz;
 
-    const uint8_t cmd[4] = {
+    uint8_t cmd[6] = {
         fm ? CMD_FM_TUNE_FREQ : CMD_AM_TUNE_FREQ,
         0x00,                       /* ARG1：不启用软静音等选项 */
         (uint8_t)(chip_freq >> 8),
         (uint8_t)(chip_freq & 0xFF),
+        0x00,                       /* ANTCAPH */
+        0x00,                       /* ANTCAPL */
     };
+    size_t cmd_len = 4;
 
-    ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), NULL, 0), TAG, "TUNE 命令失败");
+    /* AM_TUNE_FREQ 必须带天线调谐电容参数（AN332 与 PU2CLR 库一致）：
+     * 短波（>1800kHz）给 ANTCAPL=1，其余为 0（自动选择） */
+    if (!fm) {
+        cmd[5] = (freq_khz > 1800) ? 1 : 0;
+        cmd_len = 6;
+    }
+
+    ESP_RETURN_ON_ERROR(si4732_exec(cmd, cmd_len, NULL, 0), TAG, "TUNE 命令失败");
 
     s_freq_khz = freq_khz;
     return si4732_wait_tune_done(fm, NULL, NULL);
@@ -411,12 +476,23 @@ esp_err_t si4732_tune(uint32_t freq_khz)
 esp_err_t si4732_seek(bool up)
 {
     const bool fm = si4732_band_is_fm(s_band);
-    const uint8_t cmd[2] = {
+
+    uint8_t cmd[6] = {
         fm ? CMD_FM_SEEK_START : CMD_AM_SEEK_START,
         (uint8_t)(0x04 | (up ? 0x08 : 0x00)),   /* WRAP | SEEKUP */
+        0x00, 0x00,                             /* AM 专用参数 */
+        0x00,                                   /* ANTCAPH */
+        0x00,                                   /* ANTCAPL */
     };
+    size_t cmd_len = 2;
 
-    ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), NULL, 0), TAG, "SEEK 命令失败");
+    /* AM_SEEK_START 同样需要 4 个附加参数，否则芯片可能拒绝命令 */
+    if (!fm) {
+        cmd[5] = (s_freq_khz > 1800) ? 1 : 0;
+        cmd_len = 6;
+    }
+
+    ESP_RETURN_ON_ERROR(si4732_exec(cmd, cmd_len, NULL, 0), TAG, "SEEK 命令失败");
 
     return si4732_wait_tune_done(fm, NULL, NULL);
 }
@@ -443,6 +519,11 @@ esp_err_t si4732_set_band(si4732_band_t band)
     }
 
     s_band = band;
+
+    /* AM 模式内部切换（MW/SW/LW）时只需要更新搜台范围 */
+    if (!need_power_cycle) {
+        ESP_RETURN_ON_ERROR(si4732_apply_band_config(band), TAG, "配置波段搜台参数失败");
+    }
 
     uint32_t default_khz = 0;
     si4732_band_info(band, NULL, NULL, NULL, &default_khz);
@@ -500,6 +581,7 @@ esp_err_t si4732_init(void)
     ESP_RETURN_ON_ERROR(si4732_bus_attach(), TAG, "挂载 I2C 设备失败");
     ESP_RETURN_ON_ERROR(si4732_reset(), TAG, "硬件复位失败");
     ESP_RETURN_ON_ERROR(si4732_power_up(SI4732_BAND_FM), TAG, "上电失败");
+    ESP_RETURN_ON_ERROR(si4732_set_mute(false), TAG, "解除静音失败");
     ESP_RETURN_ON_ERROR(si4732_set_volume(s_volume), TAG, "设置初始音量失败");
 
     uint32_t default_khz = 0;
