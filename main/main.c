@@ -720,7 +720,7 @@ static void render_ui(const si4732_status_t *st)
     if (s_field == FIELD_FREQ) {
         u8g2_SetDrawColor(u, 2);
         if (s_editing) {
-            /* 选中后：反白当前要调的那一位 */
+            /* 选中后：只反白当前要调的那一位 */
             const int idx = freq_digit_index(st, step_hz_current());
             int cx = x + idx * 10;
             if (cx < 0) {
@@ -730,8 +730,8 @@ static void render_ui(const si4732_status_t *st)
             }
             u8g2_DrawBox(u, (u8g2_uint_t)cx, 2, 10, 18);
         } else {
-            /* 选中前：反白第一个字符 */
-            u8g2_DrawBox(u, (u8g2_uint_t)x, 2, 10, 18);
+            /* 选中前：整条频率全部反色 */
+            u8g2_DrawBox(u, (u8g2_uint_t)x, 2, (u8g2_uint_t)w, 18);
         }
         u8g2_SetDrawColor(u, 1);
     }
