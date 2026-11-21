@@ -790,9 +790,16 @@ static void render_ui(const si4732_status_t *st)
     } else if (s_editing) {
         snprintf(line, sizeof(line), "%s %s  EDIT %s",
                  band_name(st->band), ssb_name(), field_name(s_field));
-    } else {
+    } else if (st->band == SI4732_BAND_FM) {
         snprintf(line, sizeof(line), "%s %s%s  R%u S%u",
                  band_name(st->band), ssb_name(),
+                 s_muted ? " M" : "",
+                 (unsigned)st->rssi, (unsigned)st->snr);
+    } else {
+        /* AM/SW/LW 显示补丁状态：P:OK = 补丁在跑，P:0 = 未加载/丢失 */
+        snprintf(line, sizeof(line), "%s %s P:%s%s R%u S%u",
+                 band_name(st->band), ssb_name(),
+                 (si4732_get_patch_id() != 0) ? "OK" : "0",
                  s_muted ? " M" : "",
                  (unsigned)st->rssi, (unsigned)st->snr);
     }

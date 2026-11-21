@@ -95,6 +95,9 @@ static bool s_tuned = false;
 /* 补丁加载/下载期间为 true，I2C 扫描等操作应跳过 */
 static volatile bool s_patching = false;
 
+/* 最近一次成功加载的补丁 ID，0 表示未加载/已丢失 */
+static uint16_t s_patch_id = 0;
+
 /* 最近一次初始化失败信息（OLED 直接显示，方便没有串口时排查） */
 static const char *s_last_stage = "NONE";
 static esp_err_t s_last_error = ESP_OK;
@@ -384,6 +387,7 @@ esp_err_t si4732_reset(void)
     s_ssb_active = false;
     s_tuned = false;
     s_patch_loaded = false;
+    s_patch_id = 0;
     return ESP_OK;
 }
 
@@ -985,6 +989,7 @@ esp_err_t si4732_ssb_enable(bool usb)
         /* 补丁是否真正生效：GET_REV 的 PATCHID 应该非 0 */
         si4732_firmware_t fw;
         if (si4732_get_firmware(&fw) == ESP_OK) {
+            s_patch_id = fw.patch_id;
             ESP_LOGI(TAG, "补丁后版本: PN=0x%02X FW=%u.%u PATCH=0x%04X COMP=0x%04X REV=0x%02X",
                      (unsigned)fw.part_number, (unsigned)fw.fw_major,
                      (unsigned)fw.fw_minor, (unsigned)fw.patch_id,
@@ -993,6 +998,7 @@ esp_err_t si4732_ssb_enable(bool usb)
                 ESP_LOGW(TAG, "PATCH=0x0000，补丁可能没有真正运行");
             }
         } else {
+            s_patch_id = 0;
             ESP_LOGW(TAG, "补丁后读取版本失败");
         }
     }
@@ -1028,6 +1034,11 @@ bool si4732_ssb_is_active(void)
 bool si4732_is_patching(void)
 {
     return s_patching;
+}
+
+uint16_t si4732_get_patch_id(void)
+{
+    return s_patch_id;
 }
 
 bool si4732_ssb_is_usb(void)

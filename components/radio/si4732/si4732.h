@@ -238,6 +238,13 @@ esp_err_t si4732_get_firmware(si4732_firmware_t *out);
 void si4732_get_last_error(const char **stage, esp_err_t *err);
 
 /**
+ * @brief 读取当前已加载的 SSB 补丁 ID
+ *
+ * @return 补丁 ID（如 0xA902）；0 表示未加载或已丢失
+ */
+uint16_t si4732_get_patch_id(void);
+
+/**
  * @brief 是否正在加载/下载 SSB 补丁
  *
  * 补丁下载期间会长时间占用 I2C 总线，扫描等其他访问应跳过。
