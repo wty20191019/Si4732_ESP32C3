@@ -909,6 +909,13 @@ esp_err_t si4732_ssb_enable(bool usb)
 
     s_ssb_usb = usb;
 
+    /* 频率无效时先回到当前波段默认频率，避免补丁后用 0Hz 调谐 */
+    uint32_t min_khz = 0, max_khz = 0, default_khz = 0;
+    si4732_band_info(s_band, &min_khz, &max_khz, NULL, &default_khz);
+    if (s_freq_khz < min_khz || s_freq_khz > max_khz) {
+        s_freq_khz = default_khz;
+    }
+
     if (!s_patch_loaded) {
         ESP_LOGI(TAG, "首次进入 SSB，开始加载补丁 ...");
         s_patching = true;   /* 下载期间禁止扫描总线 */
@@ -938,8 +945,16 @@ esp_err_t si4732_ssb_enable(bool usb)
 
         s_patch_loaded = true;
 
-        /* 补丁就绪后按正常 AM 模式重新上电（PU2CLR setSSB 流程） */
-        err = si4732_power_up(s_band);
+        /* AN332 7.2.2：最后一行补丁 CTS 置高后芯片已经完成启动、处于 powerup，
+         * 此时不能再发 POWER_UP（会返回 ERR），直接写属性/音量即可。 */
+        s_powered = true;
+        err = si4732_set_property(PROP_REFCLK_FREQ, SI4732_REFCLK_HZ);
+        if (err == ESP_OK) {
+            err = si4732_set_property(PROP_REFCLK_PRESCALE, 1);
+        }
+        if (err == ESP_OK) {
+            err = si4732_apply_band_config(s_band);
+        }
         if (err == ESP_OK) {
             err = si4732_set_mute(false);
         }
@@ -947,7 +962,7 @@ esp_err_t si4732_ssb_enable(bool usb)
             err = si4732_set_volume(s_volume);
         }
         if (err != ESP_OK) {
-            ESP_LOGE(TAG, "补丁后恢复正常模式失败: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "补丁后配置失败: %s", esp_err_to_name(err));
             (void)si4732_reset();
             s_patch_loaded = false;
             s_patching = false;

@@ -325,6 +325,13 @@ static void radio_save_settings(void)
         .mute = s_muted,
     };
 
+    /* 频率 0 说明芯片状态异常，不要用无效值覆盖已保存设置 */
+    if (s.freq_khz == 0) {
+        ESP_LOGW(TAG, "当前频率为 0，跳过本次设置保存");
+        s_settings_dirty = false;
+        return;
+    }
+
     if (settings_save(&s)) {
         ESP_LOGI(TAG, "设置已保存: %s %lukHz VOL %u %s",
                  band_name(si4732_get_band()),
