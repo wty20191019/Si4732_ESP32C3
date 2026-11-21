@@ -504,6 +504,29 @@ static void adjust_ssb(int delta)
     }
 }
 
+/* 自动搜台：向上/向下，交给芯片内部完成，找到有效台自动停。
+ * SSB 模式不支持芯片 seek，直接忽略。 */
+static void do_seek(bool up)
+{
+    if (!s_radio_ready) {
+        return;
+    }
+    if (si4732_ssb_is_active()) {
+        ESP_LOGI(TAG, "SSB 模式不支持自动搜台");
+        return;
+    }
+
+    ESP_LOGI(TAG, "自动搜台 %s ...", up ? "向上" : "向下");
+    if (si4732_seek(up) == ESP_OK) {
+        settings_mark_dirty();
+        s_status_dirty = true;
+        status_refresh();
+        ESP_LOGI(TAG, "搜台停止: %lukHz", (unsigned long)si4732_get_frequency());
+    } else {
+        ESP_LOGW(TAG, "搜台未找到有效电台（已到边界或信号不足）");
+    }
+}
+
 static void adjust_bfo(int delta)
 {
     int bfo = (int)si4732_ssb_get_bfo() + delta * 10;
@@ -683,10 +706,13 @@ static void radio_task(void *arg)
         const uint32_t events = encoder_take_events();
 
         if (events & ENCODER_EVENT_SW_DOUBLE) {
-            /* 频率编辑时双击循环步进 */
             if (s_editing && s_field == FIELD_FREQ) {
+                /* 频率编辑时双击循环步进 */
                 const uint8_t n = step_count_current();
                 s_step_idx = (uint8_t)((s_step_idx + 1) % (n ? n : 1));
+            } else if (!s_editing) {
+                /* 未编辑时双击：向上自动搜台 */
+                do_seek(true);
             }
             s_status_dirty = true;
             status_refresh();
@@ -709,8 +735,14 @@ static void radio_task(void *arg)
         }
 
         if (events & ENCODER_EVENT_SW_LONG) {
-            s_editing = false;
-            s_field = FIELD_FREQ;
+            if (s_editing) {
+                /* 编辑中长按：退出编辑并回到频率 */
+                s_editing = false;
+                s_field = FIELD_FREQ;
+            } else {
+                /* 未编辑时长按：向下自动搜台 */
+                do_seek(false);
+            }
             s_status_dirty = true;
             status_refresh();
         }

@@ -39,9 +39,12 @@ static const char *TAG = "SI4732";
 #define PROP_FM_SEEK_BAND_BOTTOM 0x1400
 #define PROP_FM_SEEK_BAND_TOP    0x1401
 #define PROP_FM_SEEK_FREQ_SPACING 0x1402
+#define PROP_FM_SEEK_RSSI_THRESHOLD 0x1404
 #define PROP_AM_SEEK_BAND_BOTTOM 0x3400
 #define PROP_AM_SEEK_BAND_TOP    0x3401
 #define PROP_AM_SEEK_FREQ_SPACING 0x3402
+#define PROP_AM_SEEK_SNR_THRESHOLD 0x3403
+#define PROP_AM_SEEK_RSSI_THRESHOLD 0x3404
 #define PROP_RX_VOLUME          0x4000
 #define PROP_RX_HARD_MUTE       0x4001
 
@@ -63,6 +66,13 @@ static const char *TAG = "SI4732";
 /* SSB 补丁参数 */
 #define SI4732_PATCH_LINE_BYTES     8       /* 每行：命令字 + 7 字节数据 */
 #define SI4732_SSB_PATCH_DELAY_MS   50      /* 补丁 POWER_UP 后的稳定时间 */
+
+/* 搜台门限（参考 PU2CLR 示例 / SI4735 Touchscreen 工程）：
+ *   FM：触摸屏工程 setSeekFmRssiThreshold(5)
+ *   AM/SW/LW：PU2CLR 示例 setSeekAmRssiThreshold(0) + setSeekAmSNRThreshold(10) */
+#define SI4732_FM_SEEK_RSSI_TH      5       /* dBµV */
+#define SI4732_AM_SEEK_RSSI_TH      0       /* 0 = 不启用 RSSI 门限 */
+#define SI4732_AM_SEEK_SNR_TH       10      /* dB */
 
 /* 模块是否自带 32.768kHz 晶振：
  *   0 = 无晶振，由 ESP32 的 GPIO5 输出 RCLK（本工程硬件）
@@ -307,6 +317,10 @@ static esp_err_t si4732_apply_band_config(si4732_band_t band)
         ESP_RETURN_ON_ERROR(si4732_set_property(PROP_FM_SEEK_FREQ_SPACING,
                                                 (uint16_t)(step_khz / FM_PROP_UNIT_KHZ)),
                             TAG, "设置 FM 搜台步进失败");
+        /* 搜台门限参考触摸屏工程：FM RSSI 5 dBµV */
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_FM_SEEK_RSSI_THRESHOLD,
+                                                SI4732_FM_SEEK_RSSI_TH),
+                            TAG, "设置 FM 搜台 RSSI 门限失败");
     } else {
         ESP_RETURN_ON_ERROR(si4732_set_property(PROP_AM_SEEK_BAND_BOTTOM,
                                                 (uint16_t)min_khz),
@@ -317,6 +331,13 @@ static esp_err_t si4732_apply_band_config(si4732_band_t band)
         ESP_RETURN_ON_ERROR(si4732_set_property(PROP_AM_SEEK_FREQ_SPACING,
                                                 (uint16_t)step_khz),
                             TAG, "设置 AM 搜台步进失败");
+        /* 搜台门限参考 PU2CLR 示例：RSSI 不设门限，SNR 10 dB */
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_AM_SEEK_RSSI_THRESHOLD,
+                                                SI4732_AM_SEEK_RSSI_TH),
+                            TAG, "设置 AM 搜台 RSSI 门限失败");
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_AM_SEEK_SNR_THRESHOLD,
+                                                SI4732_AM_SEEK_SNR_TH),
+                            TAG, "设置 AM 搜台 SNR 门限失败");
     }
 
     ESP_LOGI(TAG, "%s 搜台范围 %lukHz~%lukHz，步进 %lukHz",
