@@ -960,7 +960,7 @@ static void console_help(void)
     ESP_LOGI(TAG, "命令: f101100(FM kHz) a1000(MW) s9700(SW) l200(LW)");
     ESP_LOGI(TAG, "      fm/am/sw/lw 切换波段 | v 状态 | vol40 音量 | mute/mute0/mute1");
     ESP_LOGI(TAG, "      usb/lsb 进入 SSB | ssb0 退出 SSB | bfo150 设置BFO(Hz) | bw0..5 带宽");
-    ESP_LOGI(TAG, "      i2c/diag 扫描总线 | save 立即保存设置");
+    ESP_LOGI(TAG, "      i2c/diag 扫描总线 | save 立即保存设置 | fw 读取芯片/补丁版本");
 }
 
 static void console_handle_line(char *line)
@@ -996,6 +996,23 @@ static void console_handle_line(char *line)
     if (!strcmp(line, "save")) {
         if (s_radio_ready) {
             radio_save_settings();
+        }
+        return;
+    }
+
+    if (!strcmp(line, "fw") || !strcmp(line, "rev")) {
+        if (!s_radio_ready) {
+            ESP_LOGW(TAG, "Si4732 尚未就绪");
+            return;
+        }
+        si4732_firmware_t fw;
+        if (si4732_get_firmware(&fw) == ESP_OK) {
+            ESP_LOGI(TAG, "PN=0x%02X FW=%u.%u PATCH=0x%04X COMP=0x%04X REV=0x%02X",
+                     (unsigned)fw.part_number, (unsigned)fw.fw_major,
+                     (unsigned)fw.fw_minor, (unsigned)fw.patch_id,
+                     (unsigned)fw.component_id, (unsigned)fw.chip_rev);
+        } else {
+            ESP_LOGE(TAG, "读取芯片版本失败");
         }
         return;
     }

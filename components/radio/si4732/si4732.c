@@ -976,6 +976,20 @@ esp_err_t si4732_ssb_enable(bool usb)
 
         s_patching = false;
         ESP_LOGI(TAG, "SSB 补丁加载完成");
+
+        /* 补丁是否真正生效：GET_REV 的 PATCHID 应该非 0 */
+        si4732_firmware_t fw;
+        if (si4732_get_firmware(&fw) == ESP_OK) {
+            ESP_LOGI(TAG, "补丁后版本: PN=0x%02X FW=%u.%u PATCH=0x%04X COMP=0x%04X REV=0x%02X",
+                     (unsigned)fw.part_number, (unsigned)fw.fw_major,
+                     (unsigned)fw.fw_minor, (unsigned)fw.patch_id,
+                     (unsigned)fw.component_id, (unsigned)fw.chip_rev);
+            if (fw.patch_id == 0) {
+                ESP_LOGW(TAG, "PATCH=0x0000，补丁可能没有真正运行");
+            }
+        } else {
+            ESP_LOGW(TAG, "补丁后读取版本失败");
+        }
     }
 
     ESP_RETURN_ON_ERROR(si4732_apply_ssb_mode(), TAG, "配置 SSB_MODE 失败");
