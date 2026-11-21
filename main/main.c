@@ -651,17 +651,6 @@ static void radio_task(void *arg)
 
 /* ============================ 显示 ============================ */
 
-static void draw_row(u8g2_t *u, uint8_t y, field_t f, const char *text)
-{
-    u8g2_DrawStr(u, 0, y, text);
-
-    if (s_field == f) {
-        u8g2_SetDrawColor(u, 2);   /* XOR 反白选中行 */
-        u8g2_DrawBox(u, 0, (uint8_t)(y - 8), OLED_WIDTH, 10);
-        u8g2_SetDrawColor(u, 1);
-    }
-}
-
 static void render_not_ready(u8g2_t *u)
 {
     const char *stage = "?";
@@ -743,48 +732,52 @@ static void render_ui(const si4732_status_t *st)
     u8g2_DrawStr(u, 0, 31, line);
     u8g2_DrawHLine(u, 0, 34, OLED_WIDTH);
 
-    /* ---------- 下区：3 行滚动字段列表 ---------- */
-    static const field_t list[] = {
-        FIELD_BAND, FIELD_VOLUME, FIELD_BW, FIELD_SSB, FIELD_BFO, FIELD_MUTE,
+    /* ---------- 下区：3 行 × 2 列，六个字段同时显示 ---------- */
+    static const field_t left_fields[3] = {
+        FIELD_BAND, FIELD_BW, FIELD_BFO,
     };
-    const int count = (int)(sizeof(list) / sizeof(list[0]));
-    const int sel = (s_field == FIELD_FREQ) ? -1 : (int)s_field - 1;
+    static const field_t right_fields[3] = {
+        FIELD_VOLUME, FIELD_SSB, FIELD_MUTE,
+    };
 
-    int start = (sel < 0) ? 0 : sel - 1;
-    if (start < 0) {
-        start = 0;
-    } else if (start > count - 3) {
-        start = count - 3;
-    }
+    for (int row = 0; row < 3; row++) {
+        const uint8_t y = (uint8_t)(42 + row * 10);
 
-    for (int i = 0; i < 3; i++) {
-        const int li = start + i;
-        const field_t f = list[li];
-        const uint8_t y = (uint8_t)(42 + i * 10);
+        for (int col = 0; col < 2; col++) {
+            const field_t f = (col == 0) ? left_fields[row] : right_fields[row];
+            const uint8_t x = (col == 0) ? 0 : 64;
+            char cell[16];
 
-        switch (f) {
-        case FIELD_BAND:
-            snprintf(line, sizeof(line), "BAND %s", band_name(st->band));
-            break;
-        case FIELD_VOLUME:
-            snprintf(line, sizeof(line), "VOL  %u", (unsigned)st->volume);
-            break;
-        case FIELD_BW:
-            snprintf(line, sizeof(line), "BW   %s",
-                     bw_text((uint8_t)si4732_ssb_get_bandwidth()));
-            break;
-        case FIELD_SSB:
-            snprintf(line, sizeof(line), "SSB  %s", ssb_name());
-            break;
-        case FIELD_BFO:
-            snprintf(line, sizeof(line), "BFO  %+dHz", (int)st->bfo_hz);
-            break;
-        default:
-            snprintf(line, sizeof(line), "MUTE %s", s_muted ? "ON" : "OFF");
-            break;
+            switch (f) {
+            case FIELD_BAND:
+                snprintf(cell, sizeof(cell), "BAND %s", band_name(st->band));
+                break;
+            case FIELD_BW:
+                snprintf(cell, sizeof(cell), "BW   %s",
+                         bw_text((uint8_t)si4732_ssb_get_bandwidth()));
+                break;
+            case FIELD_BFO:
+                snprintf(cell, sizeof(cell), "BFO %+d", (int)st->bfo_hz);
+                break;
+            case FIELD_VOLUME:
+                snprintf(cell, sizeof(cell), "VOL  %u", (unsigned)st->volume);
+                break;
+            case FIELD_SSB:
+                snprintf(cell, sizeof(cell), "SSB  %s", ssb_name());
+                break;
+            default:
+                snprintf(cell, sizeof(cell), "MUTE %s", s_muted ? "ON" : "OFF");
+                break;
+            }
+
+            u8g2_DrawStr(u, x, y, cell);
+
+            if (s_field == f) {
+                u8g2_SetDrawColor(u, 2);   /* 反白选中的半屏单元格 */
+                u8g2_DrawBox(u, x, (uint8_t)(y - 8), 64, 10);
+                u8g2_SetDrawColor(u, 1);
+            }
         }
-
-        draw_row(u, y, f, line);
     }
 
     oled_refresh();
