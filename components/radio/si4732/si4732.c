@@ -907,8 +907,10 @@ static esp_err_t si4732_apply_ssb_mode(void)
      * 之前写反了，芯片会收到错误的带宽/滤波器配置。 */
     const uint8_t audio_byte = (uint8_t)(((uint8_t)s_ssb_bw & 0x0F) |
                                          (narrow ? 0x00 : 0x10));   /* SBCUTFLT */
+    /* 参考 Pocket-FT8 / SI4735 Touchscreen：AVCEN=1 打开 SSB 自动音量，
+     * 否则 AVCEN=0 时 SSB 音频会非常小甚至听不到。 */
     const uint8_t avc_byte = (uint8_t)(0x00 |                      /* AVC_DIVIDER = 0 */
-                                       (0x00 << 4) |              /* AVCEN = 0 */
+                                       (0x01 << 4) |              /* AVCEN = 1 */
                                        (0x00 << 5) |              /* SMUTESEL = 0 */
                                        (0x01 << 7));              /* DSP_AFCDIS = 1 */
 
