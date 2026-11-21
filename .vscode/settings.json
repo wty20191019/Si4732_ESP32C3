@@ -1,0 +1,23 @@
+{
+  // EIM 安装信息文件位置（扩展从这里枚举已安装的 ESP-IDF）
+  "idf.eimIdfJsonPath": "C:\\Espressif\\tools\\eim_idf.json",
+  // 当前项目使用的 ESP-IDF 路径（对应 EIM 中的 v6.1）
+  "idf.currentSetup": "D:\\ESP\\.espressif\\v6.1\\esp-idf",
+  // 本项目由 ESP-IDF 扩展负责构建，关闭 CMake Tools 的自动配置，避免它找不到 cmake
+  "cmake.configureOnOpen": false,
+  "idf.flashType": "JTAG",
+  "idf.port": "COM20",
+  "idf.openOcdConfigs": [
+    "board/esp32c3-builtin.cfg"
+  ],
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32c3"
+  },
+  "clangd.path": "D:\\ESP\\.espressif\\v6.1\\ESP\\esp-clangd\\esp-21.1.3_20260408\\esp-clangd\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=d:\\Desktop\\Si4732-A10\\build"
+  ],
+
+}

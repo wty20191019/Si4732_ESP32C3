@@ -1,0 +1,30 @@
+# ============================ 目标芯片 ============================
+# 目标芯片：ESP32-C3（RISC-V 单核，无 PSRAM）
+CONFIG_IDF_TARGET="esp32c3"
+
+# ============================ Flash 容量 ============================
+# 板载 Flash 为 4MB
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# ============================ 分区表 ============================
+# 使用工程自带分区表：单应用分区 3MB，不划分文件系统
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-4MiB.csv"
+
+# ============================ 控制台 ============================
+# 主控制台使用 UART0，同时启用 ESP32-C3 的 USB Serial/JTAG 作为副控制台
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
+
+# ============================ FreeRTOS ============================
+# 系统节拍 1000Hz（1ms），保证编码器扫描与调谐轮询的时序精度
+CONFIG_FREERTOS_HZ=1000
+
+# ============================ 显示库 ============================
+# 只编译 SSD1306 系列驱动（SSD1315 与 SSD1306 指令兼容），减小固件体积
+CONFIG_U8G2_DISPLAY_DRIVER_SSD1306=y
+
+# ============================ 射频 ============================
+# 本工程不启用 WiFi / BLE：ESP32-C3 的射频噪声会串入 Si4732 接收链路
+# 需要联网调试功能时再单独引入 esp_wifi 组件
