@@ -747,26 +747,47 @@ esp_err_t si4732_set_band(si4732_band_t band)
 /* ============================ SSB 模式 ============================ */
 
 /**
- * @brief 以“补丁模式”上电，为下载 SSB 补丁做准备
+ * @brief POWER_UP(FUNC=15) 查询 library ID
  *
- * AN332 补丁手册要求 POWER_UP 时 PATCH=1、FUNC=1(AM)。
+ * AN332 7.2.2：进入补丁模式前必须先查询 library，确认补丁兼容；
+ * 查询完成后芯片自动回到 powerdown，随后才能发 PATCH=1 的 POWER_UP。
  */
-static esp_err_t si4732_patch_power_up(void)
+static esp_err_t si4732_query_library(bool xoscen)
 {
-    const uint8_t arg1 = (uint8_t)(0x20 |                                  /* PATCH = 1 */
-                                   (s_use_crystal ? 0x10 : 0x00) |
-                                   0x01);                                  /* FUNC = AM */
-    const uint8_t cmd[3] = { CMD_POWER_UP, arg1, 0x05 };
+    const uint8_t cmd[3] = {
+        CMD_POWER_UP,
+        (uint8_t)(0x0F | (xoscen ? 0x10 : 0x00)),   /* FUNC=15, XOSCEN */
+        0x05,
+    };
+    uint8_t resp[8] = {0};
+
+    ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), resp, sizeof(resp)),
+                        TAG, "POWER_UP(QUERY) 失败");
+
+    ESP_LOGI(TAG, "Library 查询响应: %02X %02X %02X %02X %02X %02X %02X %02X",
+             resp[0], resp[1], resp[2], resp[3],
+             resp[4], resp[5], resp[6], resp[7]);
+    vTaskDelay(pdMS_TO_TICKS(5));
+    return ESP_OK;
+}
+
+/**
+ * @brief 以“补丁模式”上电（PATCH=1、FUNC=AM）
+ *
+ * PU2CLR 的 patchPowerUp 使用 XOSCEN=1，这里根据尝试参数决定；
+ * 无晶振板会先试 XOSCEN=1（参考实现），失败再复位试 XOSCEN=0。
+ */
+static esp_err_t si4732_patch_power_up(bool xoscen)
+{
+    const uint8_t cmd[3] = {
+        CMD_POWER_UP,
+        (uint8_t)(0x20 | (xoscen ? 0x10 : 0x00) | 0x01),   /* PATCH + XOSCEN + FUNC=AM */
+        0x05,
+    };
 
     ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), NULL, 0),
-                        TAG, "POWER_UP(PATCH) 失败");
+                        TAG, "POWER_UP(PATCH, XOSCEN=%d) 失败", xoscen ? 1 : 0);
     vTaskDelay(pdMS_TO_TICKS(SI4732_SSB_PATCH_DELAY_MS));
-
-    /* 上电后属性可能被复位，重新写参考时钟；否则调谐频率会偏 */
-    ESP_RETURN_ON_ERROR(si4732_set_property(PROP_REFCLK_FREQ, SI4732_REFCLK_HZ),
-                        TAG, "设置 REFCLK_FREQ 失败");
-    ESP_RETURN_ON_ERROR(si4732_set_property(PROP_REFCLK_PRESCALE, 1),
-                        TAG, "设置 REFCLK_PRESCALE 失败");
 
     s_powered = true;
     return ESP_OK;
@@ -775,8 +796,8 @@ static esp_err_t si4732_patch_power_up(void)
 /**
  * @brief 把补丁数组按 8 字节一行写入芯片
  *
- * 与普通命令不同，补丁行不需要等待 CTS：PU2CLR/AN332 的做法是
- * 每写一行延时 300us。整段下载期间持有 I2C 锁，避免 OLED 刷新插入。
+ * AN332 要求每写一行后等 CTS 再写下一行；ERR 置位说明补丁校验失败，
+ * 芯片会 halt，必须硬件复位才能恢复。
  */
 static esp_err_t si4732_download_patch(void)
 {
@@ -785,22 +806,30 @@ static esp_err_t si4732_download_patch(void)
                         ESP_ERR_INVALID_SIZE, TAG, "补丁长度不是 8 的整数倍");
 
     const TickType_t start = xTaskGetTickCount();
-
-    ESP_RETURN_ON_ERROR(board_i2c_lock(portMAX_DELAY), TAG, "获取 I2C 锁超时");
+    esp_err_t err = board_i2c_lock(portMAX_DELAY);
+    if (err != ESP_OK) {
+        return err;
+    }
 
     for (size_t offset = 0; offset < patch_size; offset += SI4732_PATCH_LINE_BYTES) {
-        const esp_err_t err = si4732_write_locked(&ssb_patch_content[offset],
-                                                  SI4732_PATCH_LINE_BYTES);
+        err = si4732_write_locked(&ssb_patch_content[offset],
+                                  SI4732_PATCH_LINE_BYTES);
+        if (err == ESP_OK) {
+            err = si4732_wait_cts_locked(SI4732_CTS_TIMEOUT_MS);
+        }
         if (err != ESP_OK) {
-            board_i2c_unlock();
             ESP_LOGE(TAG, "补丁下载失败 @%u: %s",
                      (unsigned)offset, esp_err_to_name(err));
-            return err;
+            break;
         }
-        esp_rom_delay_us(SI4732_PATCH_DELAY_US);
     }
 
     board_i2c_unlock();
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
     vTaskDelay(pdMS_TO_TICKS(10));
 
     ESP_LOGI(TAG, "SSB 补丁下载完成: %u 字节，%u 行，耗时 %ums",
@@ -808,6 +837,19 @@ static esp_err_t si4732_download_patch(void)
              (unsigned)(patch_size / SI4732_PATCH_LINE_BYTES),
              (unsigned)((xTaskGetTickCount() - start) * portTICK_PERIOD_MS));
     return ESP_OK;
+}
+
+/**
+ * @brief 完整执行一次补丁加载流程：查询 library -> 补丁上电 -> 下载
+ */
+static esp_err_t si4732_ssb_load_patch_once(bool xoscen)
+{
+    (void)si4732_power_down();
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    ESP_RETURN_ON_ERROR(si4732_query_library(xoscen), TAG, "Library 查询失败");
+    ESP_RETURN_ON_ERROR(si4732_patch_power_up(xoscen), TAG, "补丁模式上电失败");
+    return si4732_download_patch();
 }
 
 /**
@@ -843,15 +885,48 @@ esp_err_t si4732_ssb_enable(bool usb)
     s_ssb_usb = usb;
 
     if (!s_patch_loaded) {
-        ESP_LOGI(TAG, "首次进入 SSB，开始下载补丁 ...");
-        ESP_RETURN_ON_ERROR(si4732_patch_power_up(), TAG, "补丁模式上电失败");
-        ESP_RETURN_ON_ERROR(si4732_download_patch(), TAG, "补丁下载失败");
+        ESP_LOGI(TAG, "首次进入 SSB，开始加载补丁 ...");
+
+        /* PU2CLR 的补丁流程用 XOSCEN=1；本板无晶振，先按参考实现试，
+         * 失败则复位后改用 XOSCEN=0 重试。 */
+        esp_err_t err = si4732_ssb_load_patch_once(true);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "补丁流程(XOSCEN=1)失败: %s，复位后改用 XOSCEN=0 重试",
+                     esp_err_to_name(err));
+            (void)si4732_reset();
+            err = si4732_ssb_load_patch_once(false);
+        }
+
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "SSB 补丁加载失败，复位并恢复 AM 模式");
+            (void)si4732_reset();
+            if (si4732_power_up(s_band) == ESP_OK) {
+                (void)si4732_set_mute(false);
+                (void)si4732_set_volume(s_volume);
+            }
+            s_patch_loaded = false;
+            s_ssb_active = false;
+            return err;
+        }
+
         s_patch_loaded = true;
 
         /* 补丁就绪后按正常 AM 模式重新上电（PU2CLR setSSB 流程） */
-        ESP_RETURN_ON_ERROR(si4732_power_up(s_band), TAG, "AM 模式上电失败");
-        ESP_RETURN_ON_ERROR(si4732_set_mute(false), TAG, "解除静音失败");
-        ESP_RETURN_ON_ERROR(si4732_set_volume(s_volume), TAG, "恢复音量失败");
+        err = si4732_power_up(s_band);
+        if (err == ESP_OK) {
+            err = si4732_set_mute(false);
+        }
+        if (err == ESP_OK) {
+            err = si4732_set_volume(s_volume);
+        }
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "补丁后恢复正常模式失败: %s", esp_err_to_name(err));
+            (void)si4732_reset();
+            s_patch_loaded = false;
+            return err;
+        }
+
+        ESP_LOGI(TAG, "SSB 补丁加载完成");
     }
 
     ESP_RETURN_ON_ERROR(si4732_apply_ssb_mode(), TAG, "配置 SSB_MODE 失败");
