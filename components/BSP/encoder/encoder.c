@@ -56,6 +56,10 @@ static void encoder_scan_task(void *arg)
     TickType_t sw_press_tick = 0;
     bool sw_long_sent = false;
 
+    /* 短按延迟上报：在双击窗口内等第二次按击，区分单击/双击 */
+    bool short_pending = false;
+    TickType_t short_tick = 0;
+
     TickType_t last_wake = xTaskGetTickCount();
 
     while (1) {
@@ -91,8 +95,15 @@ static void encoder_scan_task(void *arg)
                 sw_press_tick = now;
                 sw_long_sent = false;
             } else if (!sw_long_sent) {
-                /* 松开且没有触发过长按 → 短按 */
-                encoder_push_event(ENCODER_EVENT_SW_SHORT);
+                /* 松开且没有触发过长按：先挂起，等双击窗口结束 */
+                if (short_pending &&
+                    (now - short_tick) <= pdMS_TO_TICKS(ENCODER_DOUBLE_CLICK_MS)) {
+                    short_pending = false;
+                    encoder_push_event(ENCODER_EVENT_SW_DOUBLE);
+                } else {
+                    short_pending = true;
+                    short_tick = now;
+                }
             }
         }
 
@@ -100,6 +111,13 @@ static void encoder_scan_task(void *arg)
             (now - sw_press_tick) >= pdMS_TO_TICKS(ENCODER_LONG_PRESS_MS)) {
             sw_long_sent = true;
             encoder_push_event(ENCODER_EVENT_SW_LONG);
+        }
+
+        /* 双击窗口结束仍没有第二次按击 → 上报单击 */
+        if (short_pending &&
+            (now - short_tick) > pdMS_TO_TICKS(ENCODER_DOUBLE_CLICK_MS)) {
+            short_pending = false;
+            encoder_push_event(ENCODER_EVENT_SW_SHORT);
         }
 
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(ENCODER_SCAN_PERIOD_MS));

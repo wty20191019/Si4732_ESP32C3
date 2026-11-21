@@ -1046,6 +1046,11 @@ esp_err_t si4732_ssb_set_bandwidth(si4732_ssb_bandwidth_t bw)
     return ESP_OK;
 }
 
+si4732_ssb_bandwidth_t si4732_ssb_get_bandwidth(void)
+{
+    return s_ssb_bw;
+}
+
 /* ============================ 状态读取 ============================ */
 
 esp_err_t si4732_get_status(si4732_status_t *out)

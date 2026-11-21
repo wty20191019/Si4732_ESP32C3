@@ -27,13 +27,13 @@
 static const char *TAG = "app";
 
 /* ============================ 可调参数 ============================ */
-#define UI_TASK_PERIOD_MS       50      /* UI 刷新检查周期 */
-#define UI_REDRAW_MS            500     /* 主页定期重绘（RSSI 等实时值） */
-#define RADIO_POLL_MS           500     /* 状态轮询周期 */
-#define SETTINGS_SAVE_DELAY_MS  2000    /* 设置变更后延时保存，减少 NVS 擦写 */
-#define LED_TASK_PERIOD_MS      500     /* LED 闪烁周期 */
-#define RADIO_RETRY_MS          2000    /* 初始化失败后的重试间隔 */
-#define OLED_RETRY_MS           2000    /* OLED 初始化失败后的重试间隔 */
+#define UI_TASK_PERIOD_MS       50
+#define UI_REDRAW_MS            500
+#define RADIO_POLL_MS           500
+#define SETTINGS_SAVE_DELAY_MS  2000
+#define LED_TASK_PERIOD_MS      500
+#define RADIO_RETRY_MS          2000
+#define OLED_RETRY_MS           2000
 
 #define RADIO_TASK_PRIO         6
 #define UI_TASK_PRIO            3
@@ -47,22 +47,17 @@ static const char *TAG = "app";
 
 #define VOLUME_DEFAULT          30
 
-/* ============================ UI 状态 ============================ */
+/* ============================ 主页字段 ============================ */
 typedef enum {
-    SCREEN_HOME = 0,    /* 主页：频率 + 信号条 + 音量条 */
-    SCREEN_MENU,        /* 长按进入的设置菜单 */
-    SCREEN_VOLUME,      /* 音量调整 */
-    SCREEN_BFO,         /* SSB BFO 调整 */
-} screen_t;
-
-enum {
-    MENU_VOLUME = 0,
-    MENU_MUTE,
-    MENU_SSB,
-    MENU_BFO,
-    MENU_EXIT,
-    MENU_ITEM_COUNT
-};
+    FIELD_FREQ = 0,
+    FIELD_BAND,
+    FIELD_VOLUME,
+    FIELD_BW,
+    FIELD_SSB,
+    FIELD_BFO,
+    FIELD_MUTE,
+    FIELD_COUNT
+} field_t;
 
 static SemaphoreHandle_t s_status_lock = NULL;
 static si4732_status_t s_status = {
@@ -75,11 +70,12 @@ static volatile bool s_radio_ready = false;
 static volatile bool s_i2c_si4732 = false;
 static volatile bool s_i2c_oled = false;
 
-static volatile screen_t s_screen = SCREEN_HOME;
-static volatile uint8_t s_menu_sel = MENU_VOLUME;
+static volatile field_t s_field = FIELD_FREQ;
+static volatile bool s_editing = false;
+static volatile uint8_t s_step_idx = 0;
+
 static volatile bool s_muted = false;
 
-/* 设置持久化：改变后 2 秒自动写 NVS */
 static volatile bool s_settings_dirty = false;
 static TickType_t s_settings_last_change = 0;
 static radio_settings_t s_boot_settings;
@@ -97,12 +93,135 @@ static const char *band_name(si4732_band_t band)
     }
 }
 
+static const char *field_name(field_t f)
+{
+    switch (f) {
+    case FIELD_FREQ:   return "FREQ";
+    case FIELD_BAND:   return "BAND";
+    case FIELD_VOLUME: return "VOL";
+    case FIELD_BW:     return "BW";
+    case FIELD_SSB:    return "SSB";
+    case FIELD_BFO:    return "BFO";
+    case FIELD_MUTE:   return "MUTE";
+    default:           return "?";
+    }
+}
+
 static const char *ssb_name(void)
 {
     if (!si4732_ssb_is_active()) {
         return "OFF";
     }
     return si4732_ssb_is_usb() ? "USB" : "LSB";
+}
+
+static const char *bw_text(uint8_t idx)
+{
+    static const char *names[6] = { "1.2k", "2.2k", "3k", "4k", "500", "1k" };
+    return (idx < 6) ? names[idx] : "?";
+}
+
+/* 当前波段/模式可用步进（Hz） */
+static uint8_t step_count_current(void)
+{
+    switch (si4732_get_band()) {
+    case SI4732_BAND_FM: return 2;                      /* 100k, 10k */
+    case SI4732_BAND_LW: return 2;                      /* 10k, 1k */
+    case SI4732_BAND_SW: return si4732_ssb_is_active() ? 6 : 3;
+    default:             return 3;                      /* AM: 100k, 10k, 1k */
+    }
+}
+
+static uint32_t step_hz_current(void)
+{
+    static const uint32_t fm[] = { 100000, 10000 };
+    static const uint32_t lw[] = { 10000, 1000 };
+    static const uint32_t am[] = { 100000, 10000, 1000 };
+    static const uint32_t sw[] = { 100000, 10000, 1000, 100, 10, 1 };
+
+    const uint32_t *table = am;
+    uint8_t count = 3;
+    switch (si4732_get_band()) {
+    case SI4732_BAND_FM: table = fm; count = 2; break;
+    case SI4732_BAND_LW: table = lw; count = 2; break;
+    case SI4732_BAND_SW:
+        table = sw;
+        count = si4732_ssb_is_active() ? 6 : 3;
+        break;
+    default: break;
+    }
+
+    uint8_t idx = s_step_idx;
+    if (idx >= count) {
+        idx = count - 1;
+    }
+    return table[idx];
+}
+
+static const char *step_text(uint32_t hz)
+{
+    switch (hz) {
+    case 100000: return "100k";
+    case 10000:  return "10k";
+    case 1000:   return "1k";
+    case 100:    return "100";
+    case 10:     return "10";
+    default:     return "1";
+    }
+}
+
+/* 频率显示：FM -> MHz，SW -> 14.270000MHz，AM/LW -> kHz */
+static void format_freq(char *buf, size_t len, const si4732_status_t *st)
+{
+    if (st->band == SI4732_BAND_FM) {
+        snprintf(buf, len, "FM %lu.%03luMHz",
+                 (unsigned long)(st->freq_khz / 1000),
+                 (unsigned long)(st->freq_khz % 1000));
+    } else if (st->band == SI4732_BAND_SW) {
+        int64_t hz = (int64_t)st->freq_khz * 1000;
+        if (st->ssb_active) {
+            hz += st->bfo_hz;
+        }
+        if (hz < 0) {
+            hz = 0;
+        }
+        snprintf(buf, len, "SW %lu.%06luMHz",
+                 (unsigned long)(hz / 1000000),
+                 (unsigned long)(hz % 1000000));
+    } else {
+        snprintf(buf, len, "%s %lukHz", band_name(st->band),
+                 (unsigned long)st->freq_khz);
+    }
+}
+
+/* 当前步进对应频率字符串中的第几个字符（用于反白选位） */
+static int freq_digit_index(const si4732_status_t *st, uint32_t step)
+{
+    char buf[24];
+    format_freq(buf, sizeof(buf), st);
+    const char *dot = strchr(buf, '.');
+
+    if (dot != NULL) {
+        int frac = 5;
+        switch (step) {
+        case 100000: frac = 0; break;
+        case 10000:  frac = 1; break;
+        case 1000:   frac = 2; break;
+        case 100:    frac = 3; break;
+        case 10:     frac = 4; break;
+        default:     frac = 5; break;
+        }
+        return (int)(dot - buf) + 1 + frac;
+    }
+
+    const int len = (int)strlen(buf);
+    int back = 1;
+    switch (step) {
+    case 100000: back = 3; break;
+    case 10000:  back = 2; break;
+    default:     back = 1; break;
+    }
+    return len - 3 - back;   /* "kHz" 占 3 个字符 */
 }
 
 static const char *i2c_device_name(uint8_t addr)
@@ -118,13 +237,11 @@ static const char *i2c_device_name(uint8_t addr)
 
 static void i2c_scan_report(void)
 {
-    /* 补丁下载期间总线被长时间占用，不扫描 */
     if (si4732_is_patching()) {
         ESP_LOGW(TAG, "补丁下载中，跳过 I2C 扫描");
         return;
     }
 
-    /* 先看空闲电平：SDA/SCL 被拉低或短路时直接报错，不做全地址扫描 */
     if (!board_i2c_lines_idle()) {
         ESP_LOGE(TAG, "I2C 空闲电平异常（SDA=%d SCL=%d），总线被拉低或与 GND 短路",
                  gpio_get_level(BOARD_I2C_SDA_GPIO),
@@ -134,7 +251,6 @@ static void i2c_scan_report(void)
         return;
     }
 
-    /* 本板只有两个 I2C 设备，直接探测已知地址，不做 0x08~0x77 全扫描 */
     uint8_t si_addr = 0;
     if (board_i2c_probe_addr(0x11)) {
         si_addr = 0x11;
@@ -185,7 +301,6 @@ static void settings_mark_dirty(void)
     s_settings_dirty = true;
 }
 
-/* 读取芯片状态并写入共享快照 */
 static void status_refresh(void)
 {
     if (!s_radio_ready) {
@@ -205,7 +320,6 @@ static void status_refresh(void)
     }
 }
 
-/* 复制一份共享快照给 UI 使用 */
 static bool status_snapshot(si4732_status_t *out)
 {
     bool dirty = false;
@@ -229,52 +343,128 @@ static void radio_set_mute(bool mute)
     settings_mark_dirty();
 }
 
-static void radio_next_band(void)
+static void adjust_frequency(int delta)
+{
+    const uint32_t step = step_hz_current();
+
+    if (step >= 1000) {
+        uint32_t min_khz = 0, max_khz = 0;
+        si4732_band_info(si4732_get_band(), &min_khz, &max_khz, NULL, NULL);
+
+        int64_t freq = (int64_t)si4732_get_frequency() +
+                       (int64_t)delta * (int64_t)(step / 1000);
+        if (freq < (int64_t)min_khz) {
+            freq = min_khz;
+        } else if (freq > (int64_t)max_khz) {
+            freq = max_khz;
+        }
+
+        if (si4732_tune((uint32_t)freq) == ESP_OK) {
+            settings_mark_dirty();
+        }
+    } else if (si4732_ssb_is_active()) {
+        /* 1kHz 以下用 BFO 做细调 */
+        int bfo = (int)si4732_ssb_get_bfo() + delta * (int)step;
+        if (bfo < -16383) {
+            bfo = -16383;
+        } else if (bfo > 16383) {
+            bfo = 16383;
+        }
+        (void)si4732_ssb_set_bfo((int16_t)bfo);
+    }
+}
+
+static void adjust_volume(int delta)
+{
+    int volume = (int)si4732_get_volume() + delta;
+    if (volume < SI4732_VOLUME_MIN) {
+        volume = SI4732_VOLUME_MIN;
+    } else if (volume > SI4732_VOLUME_MAX) {
+        volume = SI4732_VOLUME_MAX;
+    }
+    if (si4732_set_volume((uint8_t)volume) == ESP_OK) {
+        settings_mark_dirty();
+    }
+}
+
+static void adjust_band(int delta)
 {
     static const si4732_band_t order[] = {
         SI4732_BAND_FM, SI4732_BAND_AM, SI4732_BAND_SW, SI4732_BAND_LW,
     };
-    const size_t count = sizeof(order) / sizeof(order[0]);
+    const int count = (int)(sizeof(order) / sizeof(order[0]));
 
-    size_t idx = 0;
-    for (size_t i = 0; i < count; i++) {
+    int idx = 0;
+    for (int i = 0; i < count; i++) {
         if (order[i] == si4732_get_band()) {
             idx = i;
             break;
         }
     }
 
-    const si4732_band_t next = order[(idx + 1) % count];
-    ESP_LOGI(TAG, "切换波段: %s", band_name(next));
-    if (si4732_set_band(next) != ESP_OK) {
-        ESP_LOGE(TAG, "切换波段失败");
+    idx = (idx + ((delta > 0) ? 1 : count - 1)) % count;
+    if (si4732_set_band(order[idx]) == ESP_OK) {
+        settings_mark_dirty();
     }
+    s_step_idx = 0;
 }
 
-/* SSB 菜单项循环：OFF -> USB -> LSB -> OFF */
-static void radio_cycle_ssb(void)
+static void adjust_bw(int delta)
 {
+    int bw = (int)si4732_ssb_get_bandwidth() + ((delta > 0) ? 1 : -1);
+    if (bw < 0) {
+        bw = 5;
+    } else if (bw > 5) {
+        bw = 0;
+    }
+    (void)si4732_ssb_set_bandwidth((si4732_ssb_bandwidth_t)bw);
+}
+
+static void adjust_ssb(int delta)
+{
+    const bool forward = (delta > 0);
+
     if (!si4732_ssb_is_active()) {
         if (si4732_get_band() == SI4732_BAND_FM) {
-            ESP_LOGI(TAG, "SSB 需要 AM 波段，切换到 SW");
             if (si4732_set_band(SI4732_BAND_SW) != ESP_OK) {
-                ESP_LOGE(TAG, "切换到 SW 失败");
                 return;
             }
             settings_mark_dirty();
         }
-        if (si4732_ssb_enable(true) != ESP_OK) {
-            ESP_LOGE(TAG, "进入 SSB USB 失败");
+        if (si4732_ssb_enable(forward) != ESP_OK) {
+            ESP_LOGE(TAG, "进入 SSB 失败");
         }
     } else if (si4732_ssb_is_usb()) {
-        if (si4732_ssb_enable(false) != ESP_OK) {
-            ESP_LOGE(TAG, "切换到 SSB LSB 失败");
+        if (forward) {
+            (void)si4732_ssb_disable();
+        } else if (si4732_ssb_enable(false) != ESP_OK) {
+            ESP_LOGE(TAG, "切换到 LSB 失败");
         }
     } else {
-        if (si4732_ssb_disable() != ESP_OK) {
-            ESP_LOGE(TAG, "退出 SSB 失败");
+        if (forward) {
+            if (si4732_ssb_enable(true) != ESP_OK) {
+                ESP_LOGE(TAG, "切换到 USB 失败");
+            }
+        } else {
+            (void)si4732_ssb_disable();
         }
     }
+
+    const uint8_t n = step_count_current();
+    if (s_step_idx >= n) {
+        s_step_idx = 0;
+    }
+}
+
+static void adjust_bfo(int delta)
+{
+    int bfo = (int)si4732_ssb_get_bfo() + delta * 10;
+    if (bfo < -16383) {
+        bfo = -16383;
+    } else if (bfo > 16383) {
+        bfo = 16383;
+    }
+    (void)si4732_ssb_set_bfo((int16_t)bfo);
 }
 
 static void radio_apply_boot_settings(void)
@@ -325,7 +515,6 @@ static void radio_save_settings(void)
         .mute = s_muted,
     };
 
-    /* 频率 0 说明芯片状态异常，不要用无效值覆盖已保存设置 */
     if (s.freq_khz == 0) {
         ESP_LOGW(TAG, "当前频率为 0，跳过本次设置保存");
         s_settings_dirty = false;
@@ -352,7 +541,6 @@ static void radio_task(void *arg)
 
     int fail_count = 0;
 
-    /* 上电初始化，失败则周期性重试（方便接线排查） */
     while (!s_radio_ready) {
         if (si4732_init() == ESP_OK) {
             s_radio_ready = true;
@@ -364,8 +552,7 @@ static void radio_task(void *arg)
             if (fail_count == 3) {
                 ESP_LOGE(TAG, "Si4732 连续初始化失败，请检查："
                               "1) SENB 是否接 GND 2) VDD 是否 3.3V "
-                              "3) SDA/SCL 是否有 4.7k 上拉 4) RST 接线 "
-                              "5) 模块若是晶振版，RCLK 可不接");
+                              "3) SDA/SCL 是否 4.7k 上拉 4) RST 接线");
             }
             if ((fail_count % 5) == 0) {
                 i2c_scan_report();
@@ -379,131 +566,74 @@ static void radio_task(void *arg)
     TickType_t last_poll = xTaskGetTickCount();
 
     while (1) {
-        /* ---------- 编码器旋转 ---------- */
+        /* ---------- 旋转：选字段 / 改值 ---------- */
         const int32_t count = encoder_get_count();
         const int32_t delta = count - last_count;
         last_count = count;
 
         if (delta != 0) {
-            switch (s_screen) {
-            case SCREEN_HOME: {
-                uint32_t min_khz = 0, max_khz = 0, step_khz = 0;
-                si4732_band_info(si4732_get_band(), &min_khz, &max_khz, &step_khz, NULL);
-                if (si4732_ssb_is_active()) {
-                    step_khz = 1;   /* SSB 用 1kHz 步进，细调交给 BFO */
+            if (!s_editing) {
+                int f = (int)s_field + ((delta > 0) ? 1 : -1);
+                if (f < 0) {
+                    f = FIELD_COUNT - 1;
+                } else if (f >= FIELD_COUNT) {
+                    f = 0;
                 }
-
-                int64_t freq = (int64_t)si4732_get_frequency() +
-                               (int64_t)delta * (int64_t)step_khz;
-                if (freq < (int64_t)min_khz) {
-                    freq = min_khz;
-                } else if (freq > (int64_t)max_khz) {
-                    freq = max_khz;
+                s_field = (field_t)f;
+            } else {
+                switch (s_field) {
+                case FIELD_FREQ:   adjust_frequency((int)delta); break;
+                case FIELD_BAND:   adjust_band((int)delta); break;
+                case FIELD_VOLUME: adjust_volume((int)delta); break;
+                case FIELD_BW:     adjust_bw((int)delta); break;
+                case FIELD_SSB:    adjust_ssb((int)delta); break;
+                case FIELD_BFO:    adjust_bfo((int)delta); break;
+                case FIELD_MUTE:   radio_set_mute(delta > 0); break;
+                default: break;
                 }
-
-                if (si4732_tune((uint32_t)freq) == ESP_OK) {
-                    settings_mark_dirty();
-                } else {
-                    ESP_LOGW(TAG, "调谐到 %lukHz 失败", (unsigned long)freq);
-                }
-                break;
-            }
-
-            case SCREEN_VOLUME: {
-                int volume = (int)si4732_get_volume() + (int)delta;
-                if (volume < SI4732_VOLUME_MIN) {
-                    volume = SI4732_VOLUME_MIN;
-                } else if (volume > SI4732_VOLUME_MAX) {
-                    volume = SI4732_VOLUME_MAX;
-                }
-                if (si4732_set_volume((uint8_t)volume) == ESP_OK) {
-                    settings_mark_dirty();
-                }
-                break;
-            }
-
-            case SCREEN_BFO: {
-                int bfo = (int)si4732_ssb_get_bfo() + (int)delta * 10;
-                if (bfo < -16383) {
-                    bfo = -16383;
-                } else if (bfo > 16383) {
-                    bfo = 16383;
-                }
-                (void)si4732_ssb_set_bfo((int16_t)bfo);
-                break;
-            }
-
-            case SCREEN_MENU: {
-                int sel = (int)s_menu_sel + (delta > 0 ? 1 : -1);
-                if (sel < 0) {
-                    sel = MENU_ITEM_COUNT - 1;
-                } else if (sel >= MENU_ITEM_COUNT) {
-                    sel = 0;
-                }
-                s_menu_sel = (uint8_t)sel;
-                break;
-            }
             }
 
             s_status_dirty = true;
             status_refresh();
         }
 
-        /* ---------- 编码器按键 ---------- */
+        /* ---------- 按键 ---------- */
         const uint32_t events = encoder_take_events();
 
-        if (events & ENCODER_EVENT_SW_SHORT) {
-            switch (s_screen) {
-            case SCREEN_HOME:
-                if (si4732_ssb_is_active()) {
-                    (void)si4732_ssb_disable();
-                }
-                radio_next_band();
-                settings_mark_dirty();
-                break;
-
-            case SCREEN_MENU:
-                switch (s_menu_sel) {
-                case MENU_VOLUME:
-                    s_screen = SCREEN_VOLUME;
-                    break;
-                case MENU_MUTE:
-                    radio_set_mute(!s_muted);
-                    break;
-                case MENU_SSB:
-                    radio_cycle_ssb();
-                    break;
-                case MENU_BFO:
-                    s_screen = SCREEN_BFO;
-                    break;
-                default:    /* MENU_EXIT */
-                    s_screen = SCREEN_HOME;
-                    break;
-                }
-                break;
-
-            case SCREEN_VOLUME:
-            case SCREEN_BFO:
-                s_screen = SCREEN_MENU;
-                break;
+        if (events & ENCODER_EVENT_SW_DOUBLE) {
+            /* 频率编辑时双击循环步进 */
+            if (s_editing && s_field == FIELD_FREQ) {
+                const uint8_t n = step_count_current();
+                s_step_idx = (uint8_t)((s_step_idx + 1) % (n ? n : 1));
             }
+            s_status_dirty = true;
+            status_refresh();
+        }
 
+        if (events & ENCODER_EVENT_SW_SHORT) {
+            if (!s_editing) {
+                s_editing = true;
+                if (s_field == FIELD_FREQ) {
+                    const uint8_t n = step_count_current();
+                    if (s_step_idx >= n) {
+                        s_step_idx = 0;
+                    }
+                }
+            } else {
+                s_editing = false;
+            }
             s_status_dirty = true;
             status_refresh();
         }
 
         if (events & ENCODER_EVENT_SW_LONG) {
-            if (s_screen == SCREEN_HOME) {
-                s_screen = SCREEN_MENU;
-                s_menu_sel = MENU_VOLUME;
-            } else {
-                s_screen = SCREEN_HOME;
-            }
+            s_editing = false;
+            s_field = FIELD_FREQ;
             s_status_dirty = true;
             status_refresh();
         }
 
-        /* ---------- 周期刷新状态 ---------- */
+        /* ---------- 周期刷新 ---------- */
         const TickType_t now = xTaskGetTickCount();
         if ((now - last_poll) >= pdMS_TO_TICKS(RADIO_POLL_MS)) {
             last_poll = now;
@@ -522,19 +652,14 @@ static void radio_task(void *arg)
 
 /* ============================ 显示 ============================ */
 
-/* 画一个带边框的进度条（pct 0~100） */
-static void draw_bar(u8g2_t *u, uint8_t x, uint8_t top,
-                     uint8_t width, uint8_t height, uint8_t pct)
+static void draw_row(u8g2_t *u, uint8_t y, field_t f, const char *text)
 {
-    if (pct > 100) {
-        pct = 100;
-    }
+    u8g2_DrawStr(u, 0, y, text);
 
-    u8g2_DrawFrame(u, x, top, width, height);
-
-    const uint8_t fill = (uint8_t)(((uint16_t)(width - 2) * pct) / 100);
-    if (fill > 0) {
-        u8g2_DrawBox(u, x + 1, top + 1, fill, height - 2);
+    if (s_field == f) {
+        u8g2_SetDrawColor(u, 2);   /* XOR 反白选中行 */
+        u8g2_DrawBox(u, 0, (uint8_t)(y - 6), OLED_WIDTH, 8);
+        u8g2_SetDrawColor(u, 1);
     }
 }
 
@@ -545,6 +670,7 @@ static void render_not_ready(u8g2_t *u)
     si4732_get_last_error(&stage, &err);
 
     char line[24];
+    u8g2_SetFont(u, u8g2_font_6x10_tf);
     u8g2_DrawStr(u, 0, 10, "Si4732 NOT READY");
     snprintf(line, sizeof(line), "SI47:%s RCLK:%s",
              s_i2c_si4732 ? "OK" : "NO",
@@ -555,126 +681,6 @@ static void render_not_ready(u8g2_t *u)
     u8g2_DrawStr(u, 0, 52, "UART0: diag");
 }
 
-static void render_home(u8g2_t *u, const si4732_status_t *st)
-{
-    char line[24];
-
-    if (st->ssb_active) {
-        snprintf(line, sizeof(line), "%s %lukHz %s", band_name(st->band),
-                 (unsigned long)st->freq_khz, st->ssb_usb ? "USB" : "LSB");
-    } else if (st->band == SI4732_BAND_FM) {
-        snprintf(line, sizeof(line), "%s %lu.%02luMHz", band_name(st->band),
-                 (unsigned long)(st->freq_khz / 1000),
-                 (unsigned long)((st->freq_khz % 1000) / 10));
-    } else {
-        snprintf(line, sizeof(line), "%s %lukHz", band_name(st->band),
-                 (unsigned long)st->freq_khz);
-    }
-    u8g2_DrawStr(u, 0, 10, line);
-
-    /* 信号强度条 + 数值 */
-    const uint8_t rssi_pct = (uint8_t)((st->rssi > 60) ? 100 : (st->rssi * 100 / 60));
-    snprintf(line, sizeof(line), "%3u", (unsigned)st->rssi);
-    u8g2_DrawStr(u, 0, 22, "RSSI");
-    draw_bar(u, 28, 16, 70, 7, rssi_pct);
-    u8g2_DrawStr(u, 102, 22, line);
-
-    /* 信噪比条 + 数值 */
-    const uint8_t snr_pct = (uint8_t)((st->snr > 30) ? 100 : (st->snr * 100 / 30));
-    snprintf(line, sizeof(line), "%2u", (unsigned)st->snr);
-    u8g2_DrawStr(u, 0, 34, "SNR");
-    draw_bar(u, 28, 28, 70, 7, snr_pct);
-    u8g2_DrawStr(u, 102, 34, line);
-
-    /* 音量条 + 数值 */
-    const uint8_t vol_pct = (uint8_t)(((uint16_t)st->volume * 100) / SI4732_VOLUME_MAX);
-    snprintf(line, sizeof(line), "%2u", (unsigned)st->volume);
-    u8g2_DrawStr(u, 0, 46, "VOL");
-    draw_bar(u, 28, 40, 70, 7, vol_pct);
-    u8g2_DrawStr(u, 102, 46, line);
-
-    /* 底部提示 */
-    if (s_muted) {
-        u8g2_DrawStr(u, 0, 58, "MUTE  SHORT=BAND");
-    } else if (!st->tuned) {
-        u8g2_DrawStr(u, 0, 58, "TUNING...");
-    } else if (!st->valid) {
-        u8g2_DrawStr(u, 0, 58, "NO SIGNAL");
-    } else {
-        u8g2_DrawStr(u, 0, 58, "SHORT=BAND LONG=SET");
-    }
-}
-
-static void render_menu(u8g2_t *u, const si4732_status_t *st)
-{
-    static const char *names[MENU_ITEM_COUNT] = {
-        "VOL", "MUTE", "SSB", "BFO", "EXIT",
-    };
-
-    u8g2_DrawStr(u, 0, 9, "SETTINGS");
-    u8g2_DrawHLine(u, 0, 11, OLED_WIDTH);
-
-    for (uint8_t i = 0; i < MENU_ITEM_COUNT; i++) {
-        const uint8_t y = (uint8_t)(19 + i * 10);
-        char value[8] = "";
-
-        switch (i) {
-        case MENU_VOLUME:
-            snprintf(value, sizeof(value), "%u", (unsigned)st->volume);
-            break;
-        case MENU_MUTE:
-            snprintf(value, sizeof(value), "%s", s_muted ? "ON" : "OFF");
-            break;
-        case MENU_SSB:
-            snprintf(value, sizeof(value), "%s", ssb_name());
-            break;
-        case MENU_BFO:
-            snprintf(value, sizeof(value), "%+d", (int)st->bfo_hz);
-            break;
-        default:
-            value[0] = '\0';
-            break;
-        }
-
-        char line[24];
-        snprintf(line, sizeof(line), "%c %-4s %s",
-                 (i == s_menu_sel) ? '>' : ' ', names[i], value);
-        u8g2_DrawStr(u, 0, y, line);
-
-        if (i == s_menu_sel) {
-            /* XOR 反白选中行 */
-            u8g2_SetDrawColor(u, 2);
-            u8g2_DrawBox(u, 0, (uint8_t)(y - 8), OLED_WIDTH, 9);
-            u8g2_SetDrawColor(u, 1);
-        }
-    }
-}
-
-static void render_volume(u8g2_t *u, const si4732_status_t *st)
-{
-    char line[24];
-
-    u8g2_DrawStr(u, 0, 10, "VOLUME");
-
-    const uint8_t pct = (uint8_t)(((uint16_t)st->volume * 100) / SI4732_VOLUME_MAX);
-    draw_bar(u, 4, 20, 120, 10, pct);
-
-    snprintf(line, sizeof(line), "%u / %u", (unsigned)st->volume,
-             (unsigned)SI4732_VOLUME_MAX);
-    u8g2_DrawStr(u, 40, 44, line);
-    u8g2_DrawStr(u, 0, 58, "SHORT=BACK LONG=HOME");
-}
-
-static void render_bfo(u8g2_t *u, const si4732_status_t *st)
-{
-    char line[24];
-
-    u8g2_DrawStr(u, 0, 10, "BFO TUNE");
-    snprintf(line, sizeof(line), "%+d Hz", (int)st->bfo_hz);
-    u8g2_DrawStr(u, 0, 32, line);
-    u8g2_DrawStr(u, 0, 58, "SHORT=BACK LONG=HOME");
-}
-
 static void render_ui(const si4732_status_t *st)
 {
     u8g2_t *u = oled_get_u8g2();
@@ -683,18 +689,67 @@ static void render_ui(const si4732_status_t *st)
     }
 
     u8g2_ClearBuffer(u);
-    u8g2_SetFont(u, u8g2_font_6x10_tf);
 
     if (!s_radio_ready) {
         render_not_ready(u);
-    } else {
-        switch (s_screen) {
-        case SCREEN_MENU:   render_menu(u, st); break;
-        case SCREEN_VOLUME: render_volume(u, st); break;
-        case SCREEN_BFO:    render_bfo(u, st); break;
-        default:            render_home(u, st); break;
-        }
+        oled_refresh();
+        return;
     }
+
+    u8g2_SetFont(u, u8g2_font_5x7_tf);
+
+    char line[32];
+    char fbuf[24];
+
+    /* 频率 */
+    format_freq(fbuf, sizeof(fbuf), st);
+    snprintf(line, sizeof(line), "FREQ %s", fbuf);
+    draw_row(u, 7, FIELD_FREQ, line);
+
+    /* 频率编辑：反白当前要调的位 */
+    if (s_editing && s_field == FIELD_FREQ) {
+        int idx = 5 + freq_digit_index(st, step_hz_current());
+        int x = idx * 5;
+        if (x < 0) {
+            x = 0;
+        } else if (x > OLED_WIDTH - 5) {
+            x = OLED_WIDTH - 5;
+        }
+        u8g2_SetDrawColor(u, 2);
+        u8g2_DrawBox(u, (uint8_t)x, 1, 5, 7);
+        u8g2_SetDrawColor(u, 1);
+    }
+
+    snprintf(line, sizeof(line), "BAND %s", band_name(st->band));
+    draw_row(u, 15, FIELD_BAND, line);
+
+    snprintf(line, sizeof(line), "VOL  %u", (unsigned)st->volume);
+    draw_row(u, 23, FIELD_VOLUME, line);
+
+    snprintf(line, sizeof(line), "BW   %s",
+             bw_text((uint8_t)si4732_ssb_get_bandwidth()));
+    draw_row(u, 31, FIELD_BW, line);
+
+    snprintf(line, sizeof(line), "SSB  %s", ssb_name());
+    draw_row(u, 39, FIELD_SSB, line);
+
+    snprintf(line, sizeof(line), "BFO  %+dHz", (int)st->bfo_hz);
+    draw_row(u, 47, FIELD_BFO, line);
+
+    snprintf(line, sizeof(line), "MUTE %s", s_muted ? "ON" : "OFF");
+    draw_row(u, 55, FIELD_MUTE, line);
+
+    if (s_editing) {
+        if (s_field == FIELD_FREQ) {
+            snprintf(line, sizeof(line), "STEP %sHz", step_text(step_hz_current()));
+        } else {
+            snprintf(line, sizeof(line), "EDIT %s", field_name(s_field));
+        }
+    } else {
+        snprintf(line, sizeof(line), "RSSI %u SNR %u",
+                 (unsigned)st->rssi, (unsigned)st->snr);
+    }
+    u8g2_DrawStr(u, 0, 63, line);
 
     oled_refresh();
 }
@@ -723,9 +778,7 @@ static void ui_task(void *arg)
         const bool dirty = status_snapshot(&st);
         const TickType_t now = xTaskGetTickCount();
 
-        /* 主页定期刷新 RSSI/SNR；菜单或未就绪时只在状态变化时重绘 */
-        const bool periodic = (s_screen == SCREEN_HOME) || !s_radio_ready;
-        if (dirty || (periodic && (now - last_render) >= pdMS_TO_TICKS(UI_REDRAW_MS))) {
+        if (dirty || (now - last_render) >= pdMS_TO_TICKS(UI_REDRAW_MS)) {
             last_render = now;
             render_ui(&st);
         }
@@ -750,21 +803,20 @@ static void console_print_status(void)
     }
 
     if (st.ssb_active) {
-        ESP_LOGI(TAG, "%s %lukHz %s  RSSI %u  SNR %u  VOL %u  BFO %+dHz  %s%s",
+        ESP_LOGI(TAG, "%s %lukHz %s  RSSI %u  SNR %u  VOL %u  BFO %+dHz  BW %s  %s",
                  band_name(st.band), (unsigned long)st.freq_khz,
                  st.ssb_usb ? "USB" : "LSB",
                  (unsigned)st.rssi, (unsigned)st.snr, (unsigned)st.volume,
                  (int)st.bfo_hz,
-                 !st.tuned ? "TUNING" : (st.valid ? "LOCK" : "NO SIGNAL"),
-                 s_muted ? " MUTE" : "");
+                 bw_text((uint8_t)si4732_ssb_get_bandwidth()),
+                 !st.tuned ? "TUNING" : (st.valid ? "LOCK" : "NO SIGNAL"));
     } else {
-        ESP_LOGI(TAG, "%s %lu.%03lu MHz  RSSI %u  SNR %u  VOL %u  %s%s",
+        ESP_LOGI(TAG, "%s %lu.%03lu MHz  RSSI %u  SNR %u  VOL %u  %s",
                  band_name(st.band),
                  (unsigned long)(st.freq_khz / 1000),
                  (unsigned long)(st.freq_khz % 1000),
                  (unsigned)st.rssi, (unsigned)st.snr, (unsigned)st.volume,
-                 !st.tuned ? "TUNING" : (st.valid ? "LOCK" : "NO SIGNAL"),
-                 s_muted ? " MUTE" : "");
+                 !st.tuned ? "TUNING" : (st.valid ? "LOCK" : "NO SIGNAL"));
     }
 }
 
@@ -913,6 +965,7 @@ static void console_handle_line(char *line)
         }
         if (si4732_ssb_set_bandwidth((si4732_ssb_bandwidth_t)bw) == ESP_OK) {
             ESP_LOGI(TAG, "SSB 音频带宽索引 = %d", bw);
+            status_refresh();
         }
         return;
     }
@@ -951,7 +1004,6 @@ static void console_handle_line(char *line)
         return;
     }
 
-    /* f/a/s/l + 频率（kHz）；FM 允许只写 MHz 值，例如 f101 */
     const char band_char = (char)tolower((unsigned char)line[0]);
     if ((band_char == 'f' || band_char == 'a' ||
          band_char == 's' || band_char == 'l') && isdigit((unsigned char)line[1])) {
@@ -966,7 +1018,7 @@ static void console_handle_line(char *line)
         }
 
         if (band == SI4732_BAND_FM && freq < 1000) {
-            freq *= 1000;   /* f101 -> 101000kHz */
+            freq *= 1000;
         }
 
         if (!s_radio_ready) {
@@ -1064,7 +1116,6 @@ void app_main(void)
         return;
     }
 
-    /* 0. NVS：读取上次保存的波段/频率/音量/静音 */
     esp_err_t nvs_err = nvs_flash_init();
     if (nvs_err == ESP_ERR_NVS_NO_FREE_PAGES || nvs_err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         (void)nvs_flash_erase();
@@ -1079,25 +1130,19 @@ void app_main(void)
         ESP_LOGI(TAG, "使用默认设置");
     }
 
-    /* 1. 参考时钟必须先于 Si4732 上电 */
     if (rclk_start() != ESP_OK) {
         ESP_LOGE(TAG, "32.768kHz 参考时钟启动失败");
     }
 
-    /* 2. 共用 I2C 总线（Si4732 + OLED） */
     if (board_i2c_init() != ESP_OK) {
         ESP_LOGE(TAG, "I2C 总线初始化失败");
     }
 
-    /* 2.1 先复位 Si4732：若上次 SSB 补丁失败让它进入 halt 并拉住 SDA，
-     *     复位后再扫描，避免把 0x09~0x77 全部误判成在线设备 */
     (void)si4732_reset();
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    /* 3. 上电扫描一次，方便确认接线 */
     i2c_scan_report();
 
-    /* 4. 外设初始化（失败不阻塞启动，各任务内部会重试） */
     if (oled_init(OLED_I2C_ADDR_DEFAULT) != ESP_OK) {
         ESP_LOGW(TAG, "OLED 初始化失败");
     }
@@ -1105,7 +1150,6 @@ void app_main(void)
         ESP_LOGE(TAG, "编码器初始化失败");
     }
 
-    /* 5. 启动任务 */
     xTaskCreate(radio_task, "radio", RADIO_TASK_STACK, NULL, RADIO_TASK_PRIO, NULL);
     xTaskCreate(ui_task, "ui", UI_TASK_STACK, NULL, UI_TASK_PRIO, NULL);
     xTaskCreate(console_task, "console", CONSOLE_TASK_STACK, NULL, CONSOLE_TASK_PRIO, NULL);

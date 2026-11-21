@@ -198,6 +198,11 @@ int16_t si4732_ssb_get_bfo(void);
 esp_err_t si4732_ssb_set_bandwidth(si4732_ssb_bandwidth_t bw);
 
 /**
+ * @brief 读取当前 SSB 音频带宽
+ */
+si4732_ssb_bandwidth_t si4732_ssb_get_bandwidth(void);
+
+/**
  * @brief 通用属性写入（AN332 SET_PROPERTY）
  */
 esp_err_t si4732_set_property(uint16_t prop, uint16_t value);

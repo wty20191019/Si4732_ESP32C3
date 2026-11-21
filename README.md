@@ -130,35 +130,43 @@ idf.py -p COM21 flash monitor # Ctrl+] 退出
 > 控制台主输出是 UART0（GPIO20/21），USB Serial/JTAG 作为副控制台。
 > 用 USB 线看日志没问题，但**串口输入只从 UART0 读取**。
 
-### 编码器操作（主页 + 弹出设置层）
+### 编码器操作（主页字段列表）
 
-**主页**
-- 旋转：调谐（步进按波段：FM 100 kHz、MW 10 kHz、SW 5 kHz、LW 3 kHz；SSB 1 kHz）
-- 短按：切换波段 FM → AM → SW → LW（会退出 SSB）
-- 长按（1 秒）：进入设置菜单
+主页同时显示所有信息，**旋转选字段，短按进入/退出编辑**：
 
-**设置菜单**
-- 旋转：移动选中项（`VOL` / `MUTE` / `SSB` / `BFO` / `EXIT`）
-- 短按：确认
-  - `VOL` 进入音量调整（旋转调音量，短按返回菜单）
-  - `MUTE` 切换静音
-  - `SSB` 循环 `OFF → USB → LSB → OFF`（FM 下会自动切到 SW）
-  - `BFO` 进入 BFO 调整（旋转 ±10 Hz，短按返回）
-  - `EXIT` 返回主页
-- 长按：任何设置页面直接返回主页
-
-**主页显示**
 ```
-FM 101.10MHz
-RSSI ████░░░  32
-SNR  ███░░░░  12
-VOL  █████░░  30
-SHORT=BAND LONG=SET
+FREQ SW 14.270000MHz
+BAND SW
+VOL  30
+BW   2.2k
+SSB  USB
+BFO  +0Hz
+MUTE OFF
+RSSI 32 SNR 12
 ```
 
-- 信号条：RSSI 按 60 dBµV、SNR 按 30 dB 归一化
-- 底部提示：`TUNING...` / `NO SIGNAL` / `MUTE`
-- 调谐完成看 STC；没有天线时调谐也能完成，只是显示 `NO SIGNAL`
+- **未编辑**：旋转移动选中项（`FREQ` / `BAND` / `VOL` / `BW` / `SSB` / `BFO` / `MUTE`），短按进入编辑
+- **编辑中**：旋转修改当前项，短按退出编辑
+- **长按**：退出编辑并回到 `FREQ`
+- **频率编辑**：
+  - 双击循环步进：`100k → 10k → 1k → 100 → 10 → 1 Hz`
+  - 当前要调的那一位会反白显示
+  - SW 的 1 kHz 以下通过 BFO 实现，BFO 也可以单独调
+- `BAND`：旋转切换 FM / AM / SW / LW
+- `BW`：旋转切换 `1.2k / 2.2k / 3k / 4k / 500 / 1k`
+- `SSB`：旋转切换 OFF / USB / LSB（FM 下自动切 SW；首次进入下载补丁约 3 秒）
+- `MUTE`：旋转 ON / OFF
+- `BFO`：旋转 ±10 Hz
+
+频率显示格式：
+
+| 波段 | 显示 |
+|---|---|
+| FM | `FM 101.100MHz` |
+| SW | `SW 14.270000MHz`（MHz，6 位小数） |
+| AM / LW | `AM 1000kHz` / `LW 200kHz` |
+
+> 短按会延迟约 350 ms 再上报，用来区分单击和双击；双击只循环步进，不会触发进入/退出编辑。
 
 ## 设置持久化（NVS）
 

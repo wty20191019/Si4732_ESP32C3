@@ -25,14 +25,18 @@ extern "C" {
 /* 长按判定阈值（毫秒） */
 #define ENCODER_LONG_PRESS_MS   1000
 
+/* 双击判定窗口（毫秒） */
+#define ENCODER_DOUBLE_CLICK_MS 350
+
 /* 扫描周期（毫秒） */
 #define ENCODER_SCAN_PERIOD_MS  2
 
 /* 事件位定义 */
 #define ENCODER_EVENT_CW        (1u << 0)   /* 顺时针转一格 */
 #define ENCODER_EVENT_CCW       (1u << 1)   /* 逆时针转一格 */
-#define ENCODER_EVENT_SW_SHORT  (1u << 2)   /* 按键短按 */
+#define ENCODER_EVENT_SW_SHORT  (1u << 2)   /* 按键短按（双击时不会产生） */
 #define ENCODER_EVENT_SW_LONG   (1u << 3)   /* 按键长按 */
+#define ENCODER_EVENT_SW_DOUBLE (1u << 4)   /* 快速双击 */
 
 /**
  * @brief 初始化编码器引脚并启动扫描任务
