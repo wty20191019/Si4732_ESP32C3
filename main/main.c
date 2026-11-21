@@ -90,7 +90,8 @@ static const char *adjust_name(adjust_mode_t mode)
 static const char *i2c_device_name(uint8_t addr)
 {
     switch (addr) {
-    case 0x22:          return "Si4732";
+    case 0x11:          return "Si4732";
+    case 0x63:          return "Si4732(SEN=1)";
     case 0x3C:
     case 0x3D:          return "OLED";
     default:            return "未知";
@@ -108,7 +109,7 @@ static void i2c_scan_report(void)
 
     ESP_LOGI(TAG, "I2C 设备: %u 个", (unsigned)found);
     for (size_t i = 0; i < found && i < sizeof(addrs); i++) {
-        if (addrs[i] == 0x22) {
+        if (addrs[i] == 0x11 || addrs[i] == 0x63) {
             s_i2c_si4732 = true;
         } else if (addrs[i] == 0x3C || addrs[i] == 0x3D) {
             s_i2c_oled = true;
@@ -351,7 +352,7 @@ static void render_status(const si4732_status_t *st, adjust_mode_t mode)
         si4732_get_last_error(&stage, &err);
 
         u8g2_DrawStr(u, 0, 10, "Si4732 NOT READY");
-        snprintf(line, sizeof(line), "I2C22:%s RCLK:%s",
+        snprintf(line, sizeof(line), "SI47:%s RCLK:%s",
                  s_i2c_si4732 ? "OK" : "NO",
                  rclk_is_running() ? "ON" : "OFF");
         u8g2_DrawStr(u, 0, 24, line);

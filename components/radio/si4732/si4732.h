@@ -2,11 +2,11 @@
 
 /**
  * @file  si4732.h
- * @brief Si4732-A10 收音机驱动（I2C 地址 0x22）
+ * @brief Si4732-A10 收音机驱动（7 位 I2C 地址 0x11，写地址 0x22）
  *
  * 硬件连接（见 components/BSP/board/board.h）：
  *   SDA = GPIO1，SCL = GPIO2，RST = GPIO4，GPO1 = GPIO3，RCLK = GPIO5
- *   SENB 接地，锁定 I2C 地址 0x22
+ *   SENB 接地，锁定 7 位 I2C 地址 0x11（AN332 里的 0x22 是 ADDR+W）
  *
  * 使用顺序（app_main 中实现）：
  *   1. rclk_start()            先输出 32.768 kHz 参考时钟
@@ -29,8 +29,12 @@
 extern "C" {
 #endif
 
-/* I2C 从机地址（SENB 接地） */
-#define SI4732_I2C_ADDR             0x22
+/* I2C 从机地址（SENB 接地）
+ *
+ * 注意：AN332 文档里的 0x22 是“8 位写地址”（ADDR+W）。
+ * ESP-IDF 的 i2c_master 需要 7 位地址：SEN=0 时为 0x11，
+ * 驱动会自己左移一位并加读写位（0x11 << 1 = 0x22）。 */
+#define SI4732_I2C_ADDR             0x11
 
 /* 音量范围 0~63 */
 #define SI4732_VOLUME_MIN           0

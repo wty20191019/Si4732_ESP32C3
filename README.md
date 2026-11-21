@@ -13,7 +13,7 @@ WiFi 网页 / CSV 日志等模块，替换为 Si4732 收音链路。
 
 - **芯片**：ESP32-C3（RISC-V 单核，4MB Flash）
 - **开发板**：ESP32-C3 Super Mini（原生 USB，下载走 GPIO18/19）
-- **收音芯片**：Si4732-A10（FM / AM / SW / LW，I2C 地址 0x22）
+- **收音芯片**：Si4732-A10（FM / AM / SW / LW，7 位 I2C 地址 0x11，写地址 0x22）
 - **显示**：0.96 寸 OLED（SSD1306/SSD1315，128×64，I2C 0x3C）
 - **输入**：EC11 旋转编码器（A/B 相 + 按键）
 - **音频**：Si4732 LOUT/ROUT → PAM8403 → 4Ω 3W 扬声器
@@ -40,7 +40,7 @@ I2C 速率默认 **400 kHz**（`components/BSP/board/board.h` 中 `BOARD_I2C_CLK
 - SDA/SCL 各一个 4.7 kΩ 上拉到 3V3（内部上拉太弱）
 - FMI 串联 1 nF C0G 耦合电容
 - RST 不能悬空
-- SENB 接地（锁定 0x22）
+- SENB 接地（7 位地址 0x11）
 - VDD 只能接 3.3 V
 
 ## 目录结构
@@ -208,8 +208,8 @@ si4732_ssb_disable();           // 回到普通 AM
 
 ## 调试顺序
 
-1. 上电看日志：`I2C 扫描` 应出现 `0x22`（Si4732）和 `0x3C`（OLED）
-2. 若没有 0x22：查 SENB 是否接地、RST 是否被拉低、SDA/SCL 上拉
+1. 上电看日志：`I2C 扫描` 应出现 `0x11`（Si4732）和 `0x3C`（OLED）
+2. 若没有 0x11：查 SENB 是否接地、RST 是否被拉低、SDA/SCL 上拉
 3. 若频率偏移：确认 GPIO5 有 32.768 kHz 波形、`REFCLK_FREQ` 设置为 32768
 4. 串口发 `f101100`，听扬声器是否有声音
 5. 切 `am` + `a1000` 测磁棒天线
@@ -220,7 +220,7 @@ si4732_ssb_disable();           // 回到普通 AM
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| I2C 扫描不到 0x22 | SENB 未接地、RST 悬空、上拉缺失、模块没供电 |
+| I2C 扫描不到 0x11 | SENB 未接地、RST 悬空、上拉缺失、模块没供电 |
 | 频率整体偏移 | RCLK 没输出或 `REFCLK_FREQ` 没设成 32768 |
 | 调谐总超时 | 芯片未正常上电（检查 POWER_UP 后的 CTS），或天线/波段不匹配 |
 | OLED 花屏 | I2C 速率过高，把 `BOARD_I2C_CLK_HZ` 降到 400k 以下 |
@@ -228,6 +228,6 @@ si4732_ssb_disable();           // 回到普通 AM
 | 串口命令没反应 | 命令走 UART0（GPIO20/21），不是 USB |
 | SSB 没声音或啸叫 | 先用 `bfo150`/`bfo-150` 微调；确认在 SW/AM 波段 |
 | SSB 切换后频率偏移 | 补丁模式上电后没有重新写 `REFCLK_FREQ`，检查 RCLK 与 `si4732_patch_power_up()` |
-| OLED 显示 `Si4732 NOT READY` | 屏幕第二行：`I2C22` 是 0x22 是否在线，`RCLK` 是时钟是否启动；第三行 `ERR 阶段 错误码` 指出卡在哪一步；也可发 `diag` |
-| 日志 `复位后等待 CTS 失败` | I2C 没有应答：SENB 是否接 GND、模块是否供电、地址是否 0x22 |
+| OLED 显示 `Si4732 NOT READY` | 屏幕第二行：`SI47` 是 0x11 是否在线，`RCLK` 是时钟是否启动；第三行 `ERR 阶段 错误码` 指出卡在哪一步；也可发 `diag` |
+| 日志 `复位后等待 CTS 失败` | I2C 没有应答：SENB 是否接 GND、模块是否供电、地址是否 0x11（不是 0x22） |
 | 日志 `等待 CTS 超时` | RCLK 没有到达芯片：量 GPIO5 应为约 1.6V（32.768kHz 50% 方波），检查到模块 RCLK 的连线 |

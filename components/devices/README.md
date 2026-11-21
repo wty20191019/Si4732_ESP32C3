@@ -7,7 +7,7 @@
 
 ## I2C 总线
 
-- Si4732（0x22，见 `components/radio`）与 OLED（0x3C/0x3D）共用一条总线
+- Si4732（7 位地址 0x11，见 `components/radio`）与 OLED（0x3C/0x3D）共用一条总线
 - 总线由 `esp-idf-lib/i2cdev` 创建，所有访问都要用 `board_i2c_lock()` / `board_i2c_unlock()` 串行化
 - `board_i2c_get_bus()` 把同一条总线句柄交给 u8g2，避免重复创建 I2C 控制器
 - `board_i2c_scan()` 扫描 0x08~0x77，用于上电诊断接线

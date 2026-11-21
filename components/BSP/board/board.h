@@ -23,14 +23,14 @@
 #include "driver/i2c_types.h"
 
 /* ============================ I2C 总线 ============================ */
-/* Si4732（0x22）与 OLED（0x3C/0x3D）共用同一条总线，靠从机地址区分 */
+/* Si4732（7 位 0x11）与 OLED（0x3C/0x3D）共用同一条总线，靠从机地址区分 */
 #define BOARD_I2C_PORT          I2C_NUM_0
 #define BOARD_I2C_SDA_GPIO      GPIO_NUM_1
 #define BOARD_I2C_SCL_GPIO      GPIO_NUM_2
 
 /* I2C 时钟：Si4732 与 SSD1306 规格上限都是 400kHz
  * 长导线或没有外部上拉时建议降到 100kHz */
-#define BOARD_I2C_CLK_HZ        (400 * 1000)
+#define BOARD_I2C_CLK_HZ        (100 * 1000)
 
 /* ============================ Si4732 ============================ */
 #define BOARD_SI4732_GPO1_GPIO  GPIO_NUM_3      /* 调谐完成中断（下降沿） */
