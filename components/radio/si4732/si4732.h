@@ -64,7 +64,22 @@ typedef struct {
     uint8_t snr;            /* 信噪比，dB */
     bool stereo;            /* FM 立体声导频有效（当前版本暂未解析） */
     bool valid;             /* 最近一次调谐是否有效 */
+    bool ssb_active;        /* 是否处于 SSB 模式 */
+    bool ssb_usb;           /* true = USB，false = LSB */
+    int16_t bfo_hz;         /* 当前 BFO 偏移（Hz） */
 } si4732_status_t;
+
+/**
+ * @brief SSB 音频带宽（SSB_MODE.AUDIOBW）
+ */
+typedef enum {
+    SI4732_SSB_BW_1K2 = 0,  /* 1.2kHz（默认） */
+    SI4732_SSB_BW_2K2,      /* 2.2kHz */
+    SI4732_SSB_BW_3K0,      /* 3.0kHz */
+    SI4732_SSB_BW_4K0,      /* 4.0kHz */
+    SI4732_SSB_BW_0K5,      /* 500Hz */
+    SI4732_SSB_BW_1K0,      /* 1.0kHz */
+} si4732_ssb_bandwidth_t;
 
 /**
  * @brief 初始化 Si4732（复位、上电到 FM、设置参考时钟与默认音量）
@@ -132,6 +147,50 @@ esp_err_t si4732_set_mute(bool mute);
  * @brief 退出上电状态（切换波段前使用）
  */
 esp_err_t si4732_power_down(void);
+
+/**
+ * @brief 进入 SSB 模式（USB/LSB）
+ *
+ * 只能在 AM/SW/LW 波段使用。首次调用会向芯片下载 SSB 补丁
+ * （约 10KB，耗时数百毫秒），之后切回普通 AM 不需要重复下载。
+ * 芯片掉电或硬件复位后补丁丢失，需要重新下载。
+ *
+ * @param usb true = USB，false = LSB
+ * @return ESP_OK 成功
+ */
+esp_err_t si4732_ssb_enable(bool usb);
+
+/**
+ * @brief 退出 SSB 模式，回到普通 AM 解调
+ */
+esp_err_t si4732_ssb_disable(void);
+
+/**
+ * @brief 查询当前是否处于 SSB 模式
+ */
+bool si4732_ssb_is_active(void);
+
+/**
+ * @brief 查询当前边带（仅 SSB 模式下有意义）
+ */
+bool si4732_ssb_is_usb(void);
+
+/**
+ * @brief 设置 BFO 拍频偏移（单位 Hz，范围 -16383 ~ +16383）
+ *
+ * 用于 SSB 模式下微调音调/补偿频率误差。
+ */
+esp_err_t si4732_ssb_set_bfo(int16_t hz);
+
+/**
+ * @brief 读取当前 BFO 偏移
+ */
+int16_t si4732_ssb_get_bfo(void);
+
+/**
+ * @brief 设置 SSB 音频带宽
+ */
+esp_err_t si4732_ssb_set_bandwidth(si4732_ssb_bandwidth_t bw);
 
 /**
  * @brief 通用属性写入（AN332 SET_PROPERTY）

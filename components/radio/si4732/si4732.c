@@ -11,6 +11,7 @@
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "ssb_patch_init.h"
 
 static const char *TAG = "SI4732";
 
@@ -30,6 +31,8 @@ static const char *TAG = "SI4732";
 #define CMD_AM_TUNE_STATUS      0x42
 
 /* ============================ 属性号 ============================ */
+#define PROP_SSB_BFO            0x0100
+#define PROP_SSB_MODE           0x0101
 #define PROP_REFCLK_FREQ        0x0201
 #define PROP_REFCLK_PRESCALE    0x0202
 #define PROP_FM_SEEK_BAND_BOTTOM 0x1400
@@ -55,12 +58,29 @@ static const char *TAG = "SI4732";
 #define SI4732_TUNE_TIMEOUT_MS      2000    /* 等待调谐完成超时 */
 #define SI4732_POWERUP_DELAY_MS     110     /* AN332 建议的上电稳定时间 */
 
+/* SSB 补丁参数 */
+#define SI4732_PATCH_LINE_BYTES     8       /* 每行：命令字 + 7 字节数据 */
+#define SI4732_PATCH_DELAY_US       300     /* 每行之间的最小间隔（PU2CLR 取值） */
+#define SI4732_SSB_PATCH_DELAY_MS   50      /* 补丁 POWER_UP 后的稳定时间 */
+
+/* 补丁模式 POWER_UP 的 XOSCEN 位：
+ * 本板由 ESP32 的 LEDC 提供外部 32.768kHz，使用 0（RCLK 模式）；
+ * 若你的模块板载无源晶振，改成 1。 */
+#define SI4732_SSB_PATCH_XOSCEN     0
+
 /* ============================ 驱动内部状态 ============================ */
 static i2c_master_dev_handle_t s_dev = NULL;
 static bool s_powered = false;
 static si4732_band_t s_band = SI4732_BAND_FM;
 static uint32_t s_freq_khz = 101100;
 static uint8_t s_volume = 30;
+
+/* SSB 状态：补丁下载后一直有效，直到芯片复位/掉电 */
+static bool s_patch_loaded = false;
+static bool s_ssb_active = false;
+static bool s_ssb_usb = false;
+static int16_t s_bfo_hz = 0;
+static si4732_ssb_bandwidth_t s_ssb_bw = SI4732_SSB_BW_1K2;
 
 /* ============================ 底层 I2C ============================ */
 
@@ -264,6 +284,8 @@ esp_err_t si4732_reset(void)
     }
 
     s_powered = false;
+    s_ssb_active = false;
+    s_patch_loaded = false;
     return err;
 }
 
@@ -305,6 +327,7 @@ esp_err_t si4732_power_down(void)
     const uint8_t cmd[1] = { CMD_POWER_DOWN };
     const esp_err_t err = si4732_exec(cmd, sizeof(cmd), NULL, 0);
     s_powered = false;
+    s_ssb_active = false;
     return err;
 }
 
@@ -465,6 +488,11 @@ esp_err_t si4732_tune(uint32_t freq_khz)
     if (!fm) {
         cmd[5] = (freq_khz > 1800) ? 1 : 0;
         cmd_len = 6;
+
+        /* SSB 模式：ARG1 的 bit5:4 选择边带（01=LSB，10=USB） */
+        if (s_ssb_active) {
+            cmd[1] = (uint8_t)(s_ssb_usb ? 0x02 : 0x01) << 4;
+        }
     }
 
     ESP_RETURN_ON_ERROR(si4732_exec(cmd, cmd_len, NULL, 0), TAG, "TUNE 命令失败");
@@ -475,6 +503,9 @@ esp_err_t si4732_tune(uint32_t freq_khz)
 
 esp_err_t si4732_seek(bool up)
 {
+    /* SSB 模式没有硬件搜台，由上层决定怎么调 */
+    ESP_RETURN_ON_FALSE(!s_ssb_active, ESP_ERR_NOT_SUPPORTED, TAG, "SSB 模式不支持搜台");
+
     const bool fm = si4732_band_is_fm(s_band);
 
     uint8_t cmd[6] = {
@@ -520,6 +551,9 @@ esp_err_t si4732_set_band(si4732_band_t band)
 
     s_band = band;
 
+    /* 切换波段后退出 SSB，需要时由上层重新启用 */
+    s_ssb_active = false;
+
     /* AM 模式内部切换（MW/SW/LW）时只需要更新搜台范围 */
     if (!need_power_cycle) {
         ESP_RETURN_ON_ERROR(si4732_apply_band_config(band), TAG, "配置波段搜台参数失败");
@@ -528,6 +562,184 @@ esp_err_t si4732_set_band(si4732_band_t band)
     uint32_t default_khz = 0;
     si4732_band_info(band, NULL, NULL, NULL, &default_khz);
     return si4732_tune(default_khz);
+}
+
+/* ============================ SSB 模式 ============================ */
+
+/**
+ * @brief 以“补丁模式”上电，为下载 SSB 补丁做准备
+ *
+ * AN332 补丁手册要求 POWER_UP 时 PATCH=1、FUNC=1(AM)。
+ */
+static esp_err_t si4732_patch_power_up(void)
+{
+    const uint8_t arg1 = (uint8_t)(0x20 |                                  /* PATCH = 1 */
+                                   (SI4732_SSB_PATCH_XOSCEN ? 0x10 : 0x00) |
+                                   0x01);                                  /* FUNC = AM */
+    const uint8_t cmd[3] = { CMD_POWER_UP, arg1, 0x05 };
+
+    ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), NULL, 0),
+                        TAG, "POWER_UP(PATCH) 失败");
+    vTaskDelay(pdMS_TO_TICKS(SI4732_SSB_PATCH_DELAY_MS));
+
+    /* 上电后属性可能被复位，重新写参考时钟；否则调谐频率会偏 */
+    ESP_RETURN_ON_ERROR(si4732_set_property(PROP_REFCLK_FREQ, SI4732_REFCLK_HZ),
+                        TAG, "设置 REFCLK_FREQ 失败");
+    ESP_RETURN_ON_ERROR(si4732_set_property(PROP_REFCLK_PRESCALE, 1),
+                        TAG, "设置 REFCLK_PRESCALE 失败");
+
+    s_powered = true;
+    return ESP_OK;
+}
+
+/**
+ * @brief 把补丁数组按 8 字节一行写入芯片
+ *
+ * 与普通命令不同，补丁行不需要等待 CTS：PU2CLR/AN332 的做法是
+ * 每写一行延时 300us。整段下载期间持有 I2C 锁，避免 OLED 刷新插入。
+ */
+static esp_err_t si4732_download_patch(void)
+{
+    const size_t patch_size = sizeof(ssb_patch_content);
+    ESP_RETURN_ON_FALSE(patch_size % SI4732_PATCH_LINE_BYTES == 0,
+                        ESP_ERR_INVALID_SIZE, TAG, "补丁长度不是 8 的整数倍");
+
+    const TickType_t start = xTaskGetTickCount();
+
+    ESP_RETURN_ON_ERROR(board_i2c_lock(portMAX_DELAY), TAG, "获取 I2C 锁超时");
+
+    for (size_t offset = 0; offset < patch_size; offset += SI4732_PATCH_LINE_BYTES) {
+        const esp_err_t err = si4732_write_locked(&ssb_patch_content[offset],
+                                                  SI4732_PATCH_LINE_BYTES);
+        if (err != ESP_OK) {
+            board_i2c_unlock();
+            ESP_LOGE(TAG, "补丁下载失败 @%u: %s",
+                     (unsigned)offset, esp_err_to_name(err));
+            return err;
+        }
+        esp_rom_delay_us(SI4732_PATCH_DELAY_US);
+    }
+
+    board_i2c_unlock();
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    ESP_LOGI(TAG, "SSB 补丁下载完成: %u 字节，%u 行，耗时 %ums",
+             (unsigned)patch_size,
+             (unsigned)(patch_size / SI4732_PATCH_LINE_BYTES),
+             (unsigned)((xTaskGetTickCount() - start) * portTICK_PERIOD_MS));
+    return ESP_OK;
+}
+
+/**
+ * @brief 写入 SSB_MODE 属性（带宽、边带滤波器、AVC、软静音、AFC）
+ *
+ * 字节布局（AN332 REV 0.8）：
+ *   byte0: AUDIOBW[3:0] | SBCUTFLT[7:4]
+ *   byte1: AVC_DIVIDER[3:0] | AVCEN[4] | SMUTESEL[5] | DSP_AFCDIS[7]
+ * 与 PU2CLR loadPatch 保持一致：SBCUTFLT 窄带时为 0，AVCEN=0，DSP_AFCDIS=1。
+ */
+static esp_err_t si4732_apply_ssb_mode(void)
+{
+    const bool narrow = (s_ssb_bw == SI4732_SSB_BW_1K2 ||
+                         s_ssb_bw == SI4732_SSB_BW_0K5 ||
+                         s_ssb_bw == SI4732_SSB_BW_1K0);
+    const uint8_t byte_hi = (uint8_t)(((uint8_t)s_ssb_bw & 0x0F) |
+                                       (narrow ? 0x00 : 0x10));   /* SBCUTFLT */
+    const uint8_t byte_lo = (uint8_t)(0x00 |                      /* AVC_DIVIDER = 0 */
+                                       (0x00 << 4) |              /* AVCEN = 0 */
+                                       (0x00 << 5) |              /* SMUTESEL = 0 */
+                                       (0x01 << 7));              /* DSP_AFCDIS = 1 */
+
+    return si4732_set_property(PROP_SSB_MODE,
+                               (uint16_t)(((uint16_t)byte_hi << 8) | byte_lo));
+}
+
+esp_err_t si4732_ssb_enable(bool usb)
+{
+    ESP_RETURN_ON_FALSE(s_powered, ESP_ERR_INVALID_STATE, TAG, "芯片未上电");
+    ESP_RETURN_ON_FALSE(!si4732_band_is_fm(s_band), ESP_ERR_INVALID_STATE,
+                        TAG, "SSB 只能在 AM/SW/LW 波段使用");
+
+    s_ssb_usb = usb;
+
+    if (!s_patch_loaded) {
+        ESP_LOGI(TAG, "首次进入 SSB，开始下载补丁 ...");
+        ESP_RETURN_ON_ERROR(si4732_patch_power_up(), TAG, "补丁模式上电失败");
+        ESP_RETURN_ON_ERROR(si4732_download_patch(), TAG, "补丁下载失败");
+        s_patch_loaded = true;
+
+        /* 补丁就绪后按正常 AM 模式重新上电（PU2CLR setSSB 流程） */
+        ESP_RETURN_ON_ERROR(si4732_power_up(s_band), TAG, "AM 模式上电失败");
+        ESP_RETURN_ON_ERROR(si4732_set_mute(false), TAG, "解除静音失败");
+        ESP_RETURN_ON_ERROR(si4732_set_volume(s_volume), TAG, "恢复音量失败");
+    }
+
+    ESP_RETURN_ON_ERROR(si4732_apply_ssb_mode(), TAG, "配置 SSB_MODE 失败");
+    s_ssb_active = true;
+    ESP_RETURN_ON_ERROR(si4732_ssb_set_bfo(s_bfo_hz), TAG, "设置 BFO 失败");
+
+    ESP_LOGI(TAG, "进入 SSB %s: %lukHz，BFO %+dHz，带宽 %d",
+             usb ? "USB" : "LSB", (unsigned long)s_freq_khz,
+             (int)s_bfo_hz, (int)s_ssb_bw);
+
+    /* 重新调谐一次，让 AM_TUNE_FREQ 的 ARG1 带上边带位 */
+    return si4732_tune(s_freq_khz);
+}
+
+esp_err_t si4732_ssb_disable(void)
+{
+    if (!s_ssb_active) {
+        return ESP_OK;
+    }
+
+    s_ssb_active = false;
+    ESP_LOGI(TAG, "退出 SSB，回到普通 AM");
+    return si4732_tune(s_freq_khz);
+}
+
+bool si4732_ssb_is_active(void)
+{
+    return s_ssb_active;
+}
+
+bool si4732_ssb_is_usb(void)
+{
+    return s_ssb_usb;
+}
+
+esp_err_t si4732_ssb_set_bfo(int16_t hz)
+{
+    if (hz < -16383) {
+        hz = -16383;
+    } else if (hz > 16383) {
+        hz = 16383;
+    }
+
+    if (s_ssb_active) {
+        /* 16 位有符号数以补码写入属性 */
+        ESP_RETURN_ON_ERROR(si4732_set_property(PROP_SSB_BFO, (uint16_t)hz),
+                            TAG, "设置 BFO 失败");
+    }
+
+    s_bfo_hz = hz;
+    return ESP_OK;
+}
+
+int16_t si4732_ssb_get_bfo(void)
+{
+    return s_bfo_hz;
+}
+
+esp_err_t si4732_ssb_set_bandwidth(si4732_ssb_bandwidth_t bw)
+{
+    ESP_RETURN_ON_FALSE(bw <= SI4732_SSB_BW_1K0, ESP_ERR_INVALID_ARG,
+                        TAG, "无效带宽 %d", (int)bw);
+
+    s_ssb_bw = bw;
+    if (s_ssb_active) {
+        return si4732_apply_ssb_mode();
+    }
+    return ESP_OK;
 }
 
 /* ============================ 状态读取 ============================ */
@@ -549,6 +761,9 @@ esp_err_t si4732_get_status(si4732_status_t *out)
     out->snr = snr;
     out->stereo = false;    /* TODO: 解析 FM_RSQ_STATUS 的 STEREO 位 */
     out->valid = valid;
+    out->ssb_active = s_ssb_active;
+    out->ssb_usb = s_ssb_usb;
+    out->bfo_hz = s_bfo_hz;
     return ESP_OK;
 }
 
