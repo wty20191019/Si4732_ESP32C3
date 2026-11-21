@@ -138,26 +138,37 @@ static esp_err_t si4732_read_locked(uint8_t *data, size_t len)
  * Si4732 的每个响应第一个字节都是 STATUS：
  *   bit7 CTS = 1 表示可以接收下一条命令
  *   bit6 ERR = 1 表示上一条命令执行出错
+ *
+ * 注意：芯片在 powerdown（刚复位）时可能直接 NACK 状态读，
+ * 不能把一次 NACK 当成致命错误，要继续轮询直到超时。
  */
 static esp_err_t si4732_wait_cts_locked(uint32_t timeout_ms)
 {
     const TickType_t start = xTaskGetTickCount();
+    esp_err_t last_err = ESP_ERR_TIMEOUT;
 
     for (;;) {
         uint8_t status = 0;
-        ESP_RETURN_ON_ERROR(si4732_read_locked(&status, 1), TAG, "读取状态字节失败");
+        const esp_err_t err = si4732_read_locked(&status, 1);
 
-        if (status & STATUS_CTS) {
-            if (status & STATUS_ERR) {
-                ESP_LOGW(TAG, "芯片报告命令错误: STATUS=0x%02X", status);
-                return ESP_ERR_INVALID_RESPONSE;
+        if (err == ESP_OK) {
+            if (status & STATUS_CTS) {
+                if (status & STATUS_ERR) {
+                    ESP_LOGW(TAG, "芯片报告命令错误: STATUS=0x%02X", status);
+                    return ESP_ERR_INVALID_RESPONSE;
+                }
+                return ESP_OK;
             }
-            return ESP_OK;
+            last_err = ESP_ERR_TIMEOUT;
+        } else {
+            /* powerdown 或芯片尚未就绪，NACK 后继续等 */
+            last_err = err;
         }
 
         if ((xTaskGetTickCount() - start) > pdMS_TO_TICKS(timeout_ms)) {
-            ESP_LOGW(TAG, "等待 CTS 超时（%ums）", (unsigned)timeout_ms);
-            return ESP_ERR_TIMEOUT;
+            ESP_LOGW(TAG, "等待 CTS 超时（%ums，最后错误 %s）",
+                     (unsigned)timeout_ms, esp_err_to_name(last_err));
+            return last_err;
         }
         vTaskDelay(pdMS_TO_TICKS(2));
     }
@@ -178,15 +189,29 @@ static esp_err_t si4732_exec(const uint8_t *cmd, size_t cmd_len,
 {
     ESP_RETURN_ON_FALSE(s_dev != NULL, ESP_ERR_INVALID_STATE, TAG, "请在 si4732_init() 之后调用");
 
+    /* POWER_UP 是唤醒命令：芯片在 powerdown 状态下会 NACK 状态读，
+     * 所以不能先等 CTS，必须直接写命令（与 AN332/PU2CLR 行为一致）。 */
+    const bool is_power_up = (cmd[0] == CMD_POWER_UP);
+
     esp_err_t err = board_i2c_lock(portMAX_DELAY);
     if (err != ESP_OK) {
         return err;
     }
 
-    err = si4732_wait_cts_locked(SI4732_CTS_TIMEOUT_MS);
+    if (!is_power_up) {
+        err = si4732_wait_cts_locked(SI4732_CTS_TIMEOUT_MS);
+    }
+
     if (err == ESP_OK) {
         err = si4732_write_locked(cmd, cmd_len);
+
+        /* 刚复位时芯片可能还没准备好，POWER_UP 允许重试几次 */
+        for (int retry = 0; is_power_up && err != ESP_OK && retry < 2; retry++) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            err = si4732_write_locked(cmd, cmd_len);
+        }
     }
+
     if (err == ESP_OK) {
         err = si4732_wait_cts_locked(SI4732_CTS_TIMEOUT_MS);
     }
@@ -290,27 +315,18 @@ esp_err_t si4732_reset(void)
     ESP_RETURN_ON_ERROR(si4732_bus_attach(), TAG, "挂载 I2C 设备失败");
 
     /* AN332：RST 拉低至少 100us；这里给 1ms，避免模块上 RC 复位电路
-     * 让低电平不够长；释放后再等 1ms 才轮询 CTS */
+     * 让低电平不够长；释放后再等 1ms 让芯片稳定 */
     gpio_set_level(BOARD_SI4732_RST_GPIO, 0);
     esp_rom_delay_us(1000);
     gpio_set_level(BOARD_SI4732_RST_GPIO, 1);
     esp_rom_delay_us(1000);
 
-    esp_err_t err = board_i2c_lock(portMAX_DELAY);
-    if (err == ESP_OK) {
-        err = si4732_wait_cts_locked(SI4732_CTS_TIMEOUT_MS);
-        board_i2c_unlock();
-    }
-
+    /* 复位后芯片进入 powerdown，此时读状态会 NACK，这是正常现象，
+     * 不能再把 NACK 当失败——真正的握手由随后的 POWER_UP 完成。 */
     s_powered = false;
     s_ssb_active = false;
     s_patch_loaded = false;
-
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "复位后等待 CTS 失败: %s（检查 SENB 是否接 GND、VDD 3.3V、SDA/SCL 上拉、RST 接线）",
-                 esp_err_to_name(err));
-    }
-    return err;
+    return ESP_OK;
 }
 
 static esp_err_t si4732_power_up_once(si4732_band_t band, bool crystal)
@@ -904,14 +920,8 @@ esp_err_t si4732_init(void)
         return attach_err;
     }
 
-    /* 复位握手失败不直接放弃：有些模块只有上电后参考时钟才起振，
-     * 交给 si4732_power_up() 的时钟模式自动重试处理 */
     s_last_stage = "RESET";
-    const esp_err_t reset_err = si4732_reset();
-    if (reset_err != ESP_OK) {
-        ESP_LOGW(TAG, "复位握手失败(%s)，继续尝试上电",
-                 esp_err_to_name(reset_err));
-    }
+    ESP_RETURN_ON_ERROR(si4732_reset(), TAG, "硬件复位失败");
 
     s_last_stage = "POWER";
     esp_err_t err = si4732_power_up(SI4732_BAND_FM);
