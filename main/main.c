@@ -717,9 +717,9 @@ static void radio_task(void *arg)
 
 /* ============================ 显示 ============================ */
 
-/* 画 2px 宽的竖直电平条：最小 1px，最高 12px（占满状态行），
+/* 画 2px 宽的竖直电平条：最小 1px，最高 64px（整屏高度），
  * bottom_row 是条最下面一个像素所在的行。 */
-#define LEVEL_BAR_MAX_H  12
+#define LEVEL_BAR_MAX_H  64
 
 static void draw_level_bar(u8g2_t *u, uint8_t x, uint8_t bottom_row,
                            uint8_t value, uint8_t max_value)
@@ -779,7 +779,9 @@ static void render_ui(const si4732_status_t *st)
     format_freq_value(value, sizeof(value), st);
 
     const int w = (int)u8g2_GetStrWidth(u, value);
-    int x = (OLED_WIDTH - w) / 2;
+    /* 右侧留 8px 给 R/S 电平条（两条 2px + 间隔），频率在剩余宽度内居中 */
+    const int content_w = OLED_WIDTH - 8;
+    int x = (content_w - w) / 2;
     if (x < 0) {
         x = 0;
     }
@@ -793,8 +795,8 @@ static void render_ui(const si4732_status_t *st)
             int cx = x + idx * 10;
             if (cx < 0) {
                 cx = 0;
-            } else if (cx > OLED_WIDTH - 10) {
-                cx = OLED_WIDTH - 10;
+            } else if (cx > content_w - 10) {
+                cx = content_w - 10;
             }
             u8g2_DrawBox(u, (u8g2_uint_t)cx, 2, 10, 18);
         } else {
@@ -828,11 +830,10 @@ static void render_ui(const si4732_status_t *st)
     }
     u8g2_DrawStr(u, 0, 31, line);
 
-    /* 右侧 R/S 电平条：每条宽 2px，高 1~12px，底边贴分隔线 y=33；
-     * 量程按“R24 / S6 正好半高”标定：RSSI 满格 48，SNR 满格 12；
-     * 左侧数字 R/S 已经标明顺序，这里不再重复画标签 */
-    draw_level_bar(u, 122, 33, st->rssi, 48);
-    draw_level_bar(u, 126, 33, st->snr, 12);
+    /* 右侧整屏 R/S 电平条：宽 2px，高 1~64px，底边 y=63；
+     * 量程 RSSI 48 / SNR 12，即 R24、S6 正好半屏（32px）。 */
+    draw_level_bar(u, 122, 63, st->rssi, 48);
+    draw_level_bar(u, 126, 63, st->snr, 12);
 
     u8g2_DrawHLine(u, 0, 34, OLED_WIDTH);
 
