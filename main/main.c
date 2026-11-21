@@ -728,6 +728,7 @@ static void led_task(void *arg)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Si4732 收音机启动（ESP32-C3）");
+    ESP_LOGI(TAG, "WiFi/BT 已从固件排除（最小构建），射频保持关闭");
 
     s_status_lock = xSemaphoreCreateMutex();
     if (s_status_lock == NULL) {
