@@ -29,9 +29,9 @@
 #define BOARD_I2C_SCL_GPIO      GPIO_NUM_2
 
 /* I2C 时钟：400kHz 需要 SDA/SCL 各有 4.7k 外部上拉。
- * 当前硬件在 400kHz 下扫描异常（SDA 上升沿太慢会误判全地址 ACK），
- * 先用 100kHz 保证稳定；加上拉并缩短导线后可改回 400kHz。 */
-#define BOARD_I2C_CLK_HZ        (100 * 1000)
+ * 当前板子已接 4.7k 上拉，恢复 400kHz；若出现 NACK/扫描异常，
+ * 先检查上拉、线长和 SDA/SCL 是否短路。 */
+#define BOARD_I2C_CLK_HZ        (400 * 1000)
 
 /* ============================ Si4732 ============================ */
 #define BOARD_SI4732_GPO1_GPIO  GPIO_NUM_3      /* 调谐完成中断（下降沿） */
