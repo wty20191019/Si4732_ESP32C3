@@ -52,13 +52,15 @@ static const char *TAG = "app";
 #define BOOT_ALWAYS_FM          0
 
 /* ============================ 主页字段 ============================ */
+/* 枚举顺序 = 旋转选择顺序：先左列从上到下（BAND/BW/BFO），
+ * 再右列从上到下（VOL/SSB/MUTE），与下区 3x2 布局的“列优先”一致。 */
 typedef enum {
     FIELD_FREQ = 0,
     FIELD_BAND,
-    FIELD_VOLUME,
     FIELD_BW,
-    FIELD_SSB,
     FIELD_BFO,
+    FIELD_VOLUME,
+    FIELD_SSB,
     FIELD_MUTE,
     FIELD_COUNT
 } field_t;
