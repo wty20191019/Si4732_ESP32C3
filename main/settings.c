@@ -22,7 +22,7 @@ void settings_defaults(radio_settings_t *s)
     s->freq_khz = SETTINGS_DEFAULT_FREQ_KHZ;
     s->volume = SETTINGS_DEFAULT_VOLUME;
     s->mute = false;
-    s->bw = 0;
+    s->bw = 2;   /* 3kHz，与参考工程 SSB 默认带宽一致 */
 }
 
 bool settings_load(radio_settings_t *s)

@@ -87,7 +87,9 @@ static bool s_patch_loaded = false;
 static bool s_ssb_active = false;
 static bool s_ssb_usb = false;
 static int16_t s_bfo_hz = 0;
-static si4732_ssb_bandwidth_t s_ssb_bw = SI4732_SSB_BW_1K2;
+/* 默认 3kHz，与 Pocket-FT8 / SI4735 Touchscreen 的
+ * setSSBConfig(2, 1, 0, 1, 0, 1) 一致；1.2kHz 会切掉 FT8 的高音频音调 */
+static si4732_ssb_bandwidth_t s_ssb_bw = SI4732_SSB_BW_3K0;
 
 /* 调谐完成状态：STC 是一次性中断标志，读状态时可能已被清零，
  * 所以单独保存“最近一次 tune/seek 是否成功完成”。 */
@@ -694,9 +696,11 @@ esp_err_t si4732_tune(uint32_t freq_khz)
         cmd[5] = (freq_khz > 1800) ? 1 : 0;
         cmd_len = 6;
 
-        /* SSB 模式：ARG1 的 bit5:4 选择边带（01=LSB，10=USB） */
+        /* SSB 模式：AM_TUNE_FREQ ARG1 的 D7:D6 = USBLSB
+         * （10 = USB，01 = LSB），与 PU2CLR 库、参考工程一致。
+         * 注意不是 bit5:4——写错位置芯片会忽略，仍按普通 AM 解调。 */
         if (s_ssb_active) {
-            cmd[1] = (uint8_t)(s_ssb_usb ? 0x02 : 0x01) << 4;
+            cmd[1] = s_ssb_usb ? 0x80 : 0x40;
         }
     }
 
@@ -817,8 +821,8 @@ static esp_err_t si4732_query_library(bool xoscen)
 /**
  * @brief 以“补丁模式”上电（PATCH=1、FUNC=AM）
  *
- * PU2CLR 的 patchPowerUp 使用 XOSCEN=1，这里根据尝试参数决定；
- * 无晶振板会先试 XOSCEN=1（参考实现），失败再复位试 XOSCEN=0。
+ * PU2CLR 的 patchPowerUp 固定用 XOSCEN=1（它的板子带晶振）；
+ * 本板是外部 RCLK，应使用 XOSCEN=0，这里由调用者按已确认的时钟模式传入。
  */
 static esp_err_t si4732_patch_power_up(bool xoscen)
 {
@@ -951,14 +955,20 @@ esp_err_t si4732_ssb_enable(bool usb)
         ESP_LOGI(TAG, "首次进入 SSB，开始加载补丁 ...");
         s_patching = true;   /* 下载期间禁止扫描总线 */
 
-        /* PU2CLR 的补丁流程用 XOSCEN=1；本板无晶振，先按参考实现试，
-         * 失败则复位后改用 XOSCEN=0 重试。 */
-        esp_err_t err = si4732_ssb_load_patch_once(true);
+        /* AN332：XOSCEN=0 表示使用外部 RCLK，XOSCEN=1 表示使用晶振。
+         * 先用本板已经在用的时钟模式（正常上电时已确认可用），
+         * 失败再复位换另一种模式重试。 */
+        esp_err_t err = si4732_ssb_load_patch_once(s_use_crystal);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "补丁流程(XOSCEN=1)失败: %s，复位后改用 XOSCEN=0 重试",
-                     esp_err_to_name(err));
+            ESP_LOGW(TAG, "补丁流程(%s)失败: %s，复位后改用%s重试",
+                     s_use_crystal ? "XOSCEN=1" : "XOSCEN=0",
+                     esp_err_to_name(err),
+                     s_use_crystal ? "XOSCEN=0" : "XOSCEN=1");
             (void)si4732_reset();
-            err = si4732_ssb_load_patch_once(false);
+            err = si4732_ssb_load_patch_once(!s_use_crystal);
+            if (err == ESP_OK) {
+                s_use_crystal = !s_use_crystal;
+            }
         }
 
         if (err != ESP_OK) {

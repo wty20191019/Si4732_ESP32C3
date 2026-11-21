@@ -195,7 +195,8 @@ Si4732-A10 与 Si4735-D60 同 die，支持通过补丁开启 SSB：
      补丁 ID **0x9D29**，来源 Pocket-FT8 / SI4735 Touchscreen 工程）
      按 8 字节一行、每行等待 CTS 下载到芯片内部 RAM
    - 写 `SSB_MODE`（带宽/边带滤波/AVC/AFC）和 `SSB_BFO`
-   - 按普通 AM 模式重新上电，然后以 `AM_TUNE_FREQ` 的 ARG1 边带位调谐
+   - 按普通 AM 模式重新上电，然后以 `AM_TUNE_FREQ` 的 ARG1 **D7:D6 边带位**调谐
+     （`10`=USB，`01`=LSB；与 PU2CLR 库一致）
 2. 补丁保存在芯片 RAM，**掉电或复位后丢失**；切换 FM/AM 不需要重新下载
 3. 完整补丁约 2000 行，400 kHz 下下载约 2~4 秒；期间 UI 暂停刷新、跳过总线扫描
 
