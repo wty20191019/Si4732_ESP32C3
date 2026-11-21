@@ -51,7 +51,8 @@ Si4732-A10/
 ├─ sdkconfig.defaults          # 目标芯片/Flash/分区/控制台/u8g2
 ├─ partitions-4MiB.csv         # 4MB Flash：应用分区 3MB
 ├─ main/
-│  └─ main.c                   # app_main + radio/ui/console/led 任务
+│  ├─ main.c                   # app_main + radio/ui/console/led 任务 + UI
+│  └─ settings.c/h             # NVS 设置持久化（波段/频率/音量/静音）
 ├─ components/
 │  ├─ BSP/                     # 板级支持
 │  │  ├─ board/board.h         # 引脚映射（唯一改引脚的地方）
@@ -73,9 +74,9 @@ Si4732-A10/
 
 | 任务 | 优先级 | 职责 |
 |---|---|---|
-| `radio` | 6 | Si4732 初始化/重试、编码器调谐或音量、波段切换、500ms 状态轮询 |
+| `radio` | 6 | Si4732 初始化/重试、编码器状态机（主页/菜单/音量/BFO）、调谐、500ms 状态轮询、设置延时保存 |
 | `encoder`（BSP 内部） | 5 | 2ms 扫描 A/B 相与按键，2ms 内消抖、长短按判定 |
-| `ui` | 3 | 状态变化时刷新 OLED（3 秒重试初始化） |
+| `ui` | 3 | 主页/设置菜单/音量/BFO 页面渲染（OLED 失败 2 秒重试） |
 | `console` | 2 | UART0 读取调试命令 |
 | `led` | 1 | 500ms 闪烁 |
 
@@ -92,7 +93,7 @@ Si4732-A10/
 ```powershell
 idf.py set-target esp32c3     # 首次
 idf.py build
-idf.py -p COM20 flash monitor # Ctrl+] 退出
+idf.py -p COM21 flash monitor # Ctrl+] 退出
 ```
 
 首次构建会自动从组件仓库下载 `esp-idf-lib/i2cdev` 与 `nixy4/u8g2`。
@@ -119,21 +120,54 @@ idf.py -p COM20 flash monitor # Ctrl+] 退出
 | `bfo150` / `bfo-150` | 设置 BFO 偏移（Hz，范围 ±16383） |
 | `bw0` ~ `bw5` | SSB 音频带宽：1.2k / 2.2k / 3k / 4k / 500Hz / 1kHz |
 | `i2c` / `diag` | 扫描 I2C 总线并打印 Si4732/OLED 在线状态与时钟模式 |
-| `v` | 打印频率 / RSSI / SNR / 音量 |
+| `v` | 打印频率 / RSSI / SNR / 音量 / 静音 |
 | `vol40` | 音量 0~63 |
+| `mute` / `mute0` / `mute1` | 切换静音 / 取消静音 / 静音 |
+| `save` | 立即把当前设置写入 NVS |
 | `+` / `-` | 向上 / 向下搜台（SSB 下不支持） |
 | `h` | 帮助 |
 
 > 控制台主输出是 UART0（GPIO20/21），USB Serial/JTAG 作为副控制台。
 > 用 USB 线看日志没问题，但**串口输入只从 UART0 读取**。
 
-### 编码器操作
+### 编码器操作（主页 + 弹出设置层）
 
-- 旋转：调谐（步进按波段：FM 100 kHz、MW 10 kHz、SW 5 kHz、LW 3 kHz；SSB 1 kHz）或调音量
+**主页**
+- 旋转：调谐（步进按波段：FM 100 kHz、MW 10 kHz、SW 5 kHz、LW 3 kHz；SSB 1 kHz）
 - 短按：切换波段 FM → AM → SW → LW（会退出 SSB）
-- 长按（1 秒）：循环切换 调谐 → 音量 → USB → LSB → 调谐
-- 进入 USB/LSB 时会自动切到 SW（若当前是 FM），首次进入需下载 SSB 补丁
-- OLED 第三行显示当前模式（`TUNE` / `VOL` / `USB` / `LSB`），第四行显示 BFO
+- 长按（1 秒）：进入设置菜单
+
+**设置菜单**
+- 旋转：移动选中项（`VOL` / `MUTE` / `SSB` / `BFO` / `EXIT`）
+- 短按：确认
+  - `VOL` 进入音量调整（旋转调音量，短按返回菜单）
+  - `MUTE` 切换静音
+  - `SSB` 循环 `OFF → USB → LSB → OFF`（FM 下会自动切到 SW）
+  - `BFO` 进入 BFO 调整（旋转 ±10 Hz，短按返回）
+  - `EXIT` 返回主页
+- 长按：任何设置页面直接返回主页
+
+**主页显示**
+```
+FM 101.10MHz
+RSSI ████░░░  32
+SNR  ███░░░░  12
+VOL  █████░░  30
+SHORT=BAND LONG=SET
+```
+
+- 信号条：RSSI 按 60 dBµV、SNR 按 30 dB 归一化
+- 底部提示：`TUNING...` / `NO SIGNAL` / `MUTE`
+- 调谐完成看 STC；没有天线时调谐也能完成，只是显示 `NO SIGNAL`
+
+## 设置持久化（NVS）
+
+- 命名空间：`radio`
+- 保存项：**当前波段、当前频率、音量、静音**
+- 触发：任何修改后 **延时 2 秒** 自动写入，连续拧编码器只写一次
+- 上电：`app_main` 读取后由 `radio_task` 恢复，频率不在保存波段范围时回退到该波段默认频率
+- 想立即保存可在串口发 `save`
+- 擦除设置：`idf.py erase-flash`，或串口发默认值后再触发保存
 
 ## SSB（USB/LSB）
 
