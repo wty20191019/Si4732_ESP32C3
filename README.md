@@ -93,7 +93,9 @@ I2C 速率默认 **400 kHz**（`components/BSP/board/board.h` 中 `BOARD_I2C_CLK
 | 项目 | 结果 |
 |---|---|
 | FM 64–108 MHz | ✅ 正常，本地台可听 |
-| AM / SW / LW 调谐 | ✅ 正常，RSSI/SNR 可读 |
+| SW 调谐（SSB/FT8） | ✅ USB / LSB 已测，FT8 可解部分强信号 |
+| AM / LW 普通 AM 接收 | ⬜ **未测试** |
+| SW 普通 AM 接收（非 SSB） | ⬜ **未测试** |
 | SSB 补丁 | ✅ `PATCH=0x9D29`，OLED 显示 `P:OK` |
 | SSB 边带 | ✅ USB / LSB 均能解调（边带位 D7:D6 修复后） |
 | **FT8 接收** | ✅ 强信号可被 **FT8CN 部分解码** |
@@ -108,6 +110,9 @@ I2C 速率默认 **400 kHz**（`components/BSP/board/board.h` 中 `BOARD_I2C_CLK
 
 **待验证：**
 
+- [ ] `AM 1000 kHz` 普通 AM 接收
+- [ ] `LW 200 kHz` 接收
+- [ ] `SW` 普通 AM（非 SSB）接收
 - [ ] `14.270 MHz USB` 业余语音
 - [ ] `7.050–7.070 MHz LSB` 语音（夜间）
 - [ ] `7.074 MHz LSB` FT8（夜间，台更多）
