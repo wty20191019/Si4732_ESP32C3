@@ -121,35 +121,47 @@ static const char *bw_text(uint8_t idx)
     return (idx < 6) ? names[idx] : "?";
 }
 
-/* 当前波段/模式可用步进（Hz） */
+/* 当前波段/模式可用步进表（Hz） */
+static const uint32_t *step_table_current(uint8_t *count)
+{
+    static const uint32_t fm[] = { 10000000, 1000000, 100000, 10000 };
+    static const uint32_t lw[] = { 100000, 10000, 1000 };
+    static const uint32_t am[] = { 100000, 10000, 1000 };
+    static const uint32_t sw_am[] = { 10000000, 1000000, 100000, 10000, 1000 };
+    static const uint32_t sw_ssb[] = { 10000000, 1000000, 100000, 10000,
+                                       1000, 100, 10, 1 };
+
+    switch (si4732_get_band()) {
+    case SI4732_BAND_FM:
+        *count = sizeof(fm) / sizeof(fm[0]);
+        return fm;
+    case SI4732_BAND_LW:
+        *count = sizeof(lw) / sizeof(lw[0]);
+        return lw;
+    case SI4732_BAND_SW:
+        if (si4732_ssb_is_active()) {
+            *count = sizeof(sw_ssb) / sizeof(sw_ssb[0]);
+            return sw_ssb;
+        }
+        *count = sizeof(sw_am) / sizeof(sw_am[0]);
+        return sw_am;
+    default:
+        *count = sizeof(am) / sizeof(am[0]);
+        return am;
+    }
+}
+
 static uint8_t step_count_current(void)
 {
-    switch (si4732_get_band()) {
-    case SI4732_BAND_FM: return 2;                      /* 100k, 10k */
-    case SI4732_BAND_LW: return 2;                      /* 10k, 1k */
-    case SI4732_BAND_SW: return si4732_ssb_is_active() ? 6 : 3;
-    default:             return 3;                      /* AM: 100k, 10k, 1k */
-    }
+    uint8_t count = 0;
+    (void)step_table_current(&count);
+    return count;
 }
 
 static uint32_t step_hz_current(void)
 {
-    static const uint32_t fm[] = { 100000, 10000 };
-    static const uint32_t lw[] = { 10000, 1000 };
-    static const uint32_t am[] = { 100000, 10000, 1000 };
-    static const uint32_t sw[] = { 100000, 10000, 1000, 100, 10, 1 };
-
-    const uint32_t *table = am;
-    uint8_t count = 3;
-    switch (si4732_get_band()) {
-    case SI4732_BAND_FM: table = fm; count = 2; break;
-    case SI4732_BAND_LW: table = lw; count = 2; break;
-    case SI4732_BAND_SW:
-        table = sw;
-        count = si4732_ssb_is_active() ? 6 : 3;
-        break;
-    default: break;
-    }
+    uint8_t count = 0;
+    const uint32_t *table = step_table_current(&count);
 
     uint8_t idx = s_step_idx;
     if (idx >= count) {
@@ -161,12 +173,14 @@ static uint32_t step_hz_current(void)
 static const char *step_text(uint32_t hz)
 {
     switch (hz) {
-    case 100000: return "100k";
-    case 10000:  return "10k";
-    case 1000:   return "1k";
-    case 100:    return "100";
-    case 10:     return "10";
-    default:     return "1";
+    case 10000000: return "10M";
+    case 1000000:  return "1M";
+    case 100000:   return "100k";
+    case 10000:    return "10k";
+    case 1000:     return "1k";
+    case 100:      return "100";
+    case 10:       return "10";
+    default:       return "1";
     }
 }
 
@@ -201,6 +215,11 @@ static int freq_digit_index(const si4732_status_t *st, uint32_t step)
     const char *dot = strchr(buf, '.');
 
     if (dot != NULL) {
+        /* 10M / 1M 是整数位，位于小数点左侧 */
+        if (step >= 1000000) {
+            return (int)(dot - buf) - ((step == 10000000) ? 2 : 1);
+        }
+
         int frac = 5;
         switch (step) {
         case 100000: frac = 0; break;
