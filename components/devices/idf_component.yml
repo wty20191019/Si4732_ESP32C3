@@ -1,0 +1,7 @@
+## 外设驱动组件依赖
+dependencies:
+  idf: '>=5.0'
+  ## I2C 总线与设备读写（esp-idf-lib）
+  esp-idf-lib/i2cdev: '^2.2.0'
+  ## u8g2 图形库（ESP-IDF 移植版，含 SSD1306/SSD1315 驱动）
+  nixy4/u8g2: '^0.1.4'
