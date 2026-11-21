@@ -59,6 +59,8 @@ static si4732_status_t s_status = {
 };
 static volatile bool s_status_dirty = true;
 static volatile bool s_radio_ready = false;
+static volatile bool s_i2c_si4732 = false;
+static volatile bool s_i2c_oled = false;
 static volatile adjust_mode_t s_adjust_mode = ADJ_TUNE;
 
 /* ============================ 工具函数 ============================ */
@@ -101,8 +103,16 @@ static void i2c_scan_report(void)
     uint8_t addrs[16] = {0};
     const size_t found = board_i2c_scan(addrs, sizeof(addrs));
 
+    s_i2c_si4732 = false;
+    s_i2c_oled = false;
+
     ESP_LOGI(TAG, "I2C 设备: %u 个", (unsigned)found);
     for (size_t i = 0; i < found && i < sizeof(addrs); i++) {
+        if (addrs[i] == 0x22) {
+            s_i2c_si4732 = true;
+        } else if (addrs[i] == 0x3C || addrs[i] == 0x3D) {
+            s_i2c_oled = true;
+        }
         ESP_LOGI(TAG, "  0x%02X  %s", addrs[i], i2c_device_name(addrs[i]));
     }
     if (found == 0) {
@@ -214,6 +224,10 @@ static void radio_task(void *arg)
                               "3) SDA/SCL 是否有 4.7k 上拉 4) RST 接线 "
                               "5) 模块若是晶振版，RCLK 可不接");
             }
+            /* 每 5 次重试（约 10 秒）重新扫描一次总线，更新 OLED 上的在线状态 */
+            if ((fail_count % 5) == 0) {
+                i2c_scan_report();
+            }
             ESP_LOGW(TAG, "Si4732 初始化失败，%dms 后重试", RADIO_RETRY_MS);
             vTaskDelay(pdMS_TO_TICKS(RADIO_RETRY_MS));
         }
@@ -304,6 +318,21 @@ static void radio_task(void *arg)
 
 /* ============================ 显示任务 ============================ */
 
+/* 错误码缩短成 OLED 能放下的文字 */
+static const char *short_error(esp_err_t err)
+{
+    switch (err) {
+    case ESP_OK:                   return "OK";
+    case ESP_ERR_TIMEOUT:          return "TIMEOUT";
+    case ESP_ERR_INVALID_RESPONSE: return "BAD_RESP";
+    case ESP_ERR_INVALID_STATE:    return "BAD_STATE";
+    case ESP_ERR_INVALID_ARG:      return "BAD_ARG";
+    case ESP_ERR_NOT_FOUND:        return "NOT_FOUND";
+    case ESP_FAIL:                 return "FAIL";
+    default:                       return "ERR";
+    }
+}
+
 static void render_status(const si4732_status_t *st, adjust_mode_t mode)
 {
     u8g2_t *u = oled_get_u8g2();
@@ -317,9 +346,18 @@ static void render_status(const si4732_status_t *st, adjust_mode_t mode)
     u8g2_SetFont(u, u8g2_font_6x10_tf);
 
     if (!s_radio_ready) {
-        u8g2_DrawStr(u, 0, 10, "Si4732");
-        u8g2_DrawStr(u, 0, 24, "NOT READY");
-        u8g2_DrawStr(u, 0, 38, "check I2C/RCLK");
+        const char *stage = "?";
+        esp_err_t err = ESP_OK;
+        si4732_get_last_error(&stage, &err);
+
+        u8g2_DrawStr(u, 0, 10, "Si4732 NOT READY");
+        snprintf(line, sizeof(line), "I2C22:%s RCLK:%s",
+                 s_i2c_si4732 ? "OK" : "NO",
+                 rclk_is_running() ? "ON" : "OFF");
+        u8g2_DrawStr(u, 0, 24, line);
+        snprintf(line, sizeof(line), "ERR %s %s", stage, short_error(err));
+        u8g2_DrawStr(u, 0, 38, line);
+        u8g2_DrawStr(u, 0, 52, "UART0: diag");
         oled_refresh();
         return;
     }
@@ -359,6 +397,7 @@ static void ui_task(void *arg)
     (void)arg;
 
     TickType_t last_oled_try = 0;
+    TickType_t last_diag_render = 0;
 
     while (1) {
         if (oled_get_u8g2() == NULL) {
@@ -375,7 +414,13 @@ static void ui_task(void *arg)
 
         si4732_status_t st;
         adjust_mode_t mode;
-        if (status_snapshot(&st, &mode)) {
+        const bool dirty = status_snapshot(&st, &mode);
+        const TickType_t now = xTaskGetTickCount();
+
+        /* 未就绪时每 500ms 重绘一次，让 I2C/错误码变化能实时显示 */
+        if (dirty || (!s_radio_ready &&
+                      (now - last_diag_render) >= pdMS_TO_TICKS(500))) {
+            last_diag_render = now;
             render_status(&st, mode);
         }
 

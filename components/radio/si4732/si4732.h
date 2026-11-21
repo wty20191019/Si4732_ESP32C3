@@ -220,6 +220,14 @@ typedef struct {
 esp_err_t si4732_get_firmware(si4732_firmware_t *out);
 
 /**
+ * @brief 读取最近一次初始化失败的位置与错误码（用于 OLED 诊断显示）
+ *
+ * @param stage 失败阶段名，如 "RESET"/"POWER"/"VOL"/"OK"（可为 NULL）
+ * @param err   错误码（可为 NULL）
+ */
+void si4732_get_last_error(const char **stage, esp_err_t *err);
+
+/**
  * @brief 当前使用的时钟模式
  *
  * @return true = 板载晶振（XOSCEN=1），false = 外部 RCLK（XOSCEN=0）

@@ -83,6 +83,10 @@ static bool s_ssb_usb = false;
 static int16_t s_bfo_hz = 0;
 static si4732_ssb_bandwidth_t s_ssb_bw = SI4732_SSB_BW_1K2;
 
+/* 最近一次初始化失败信息（OLED 直接显示，方便没有串口时排查） */
+static const char *s_last_stage = "NONE";
+static esp_err_t s_last_error = ESP_OK;
+
 /* ============================ 底层 I2C ============================ */
 
 /* 把 Si4732 挂到 board_i2c 管理的共享总线上 */
@@ -429,6 +433,16 @@ esp_err_t si4732_get_firmware(si4732_firmware_t *out)
 bool si4732_using_crystal(void)
 {
     return s_use_crystal;
+}
+
+void si4732_get_last_error(const char **stage, esp_err_t *err)
+{
+    if (stage != NULL) {
+        *stage = s_last_stage;
+    }
+    if (err != NULL) {
+        *err = s_last_error;
+    }
 }
 
 /* ============================ 音量 / 静音 ============================ */
@@ -837,6 +851,8 @@ esp_err_t si4732_get_status(si4732_status_t *out)
 
 esp_err_t si4732_init(void)
 {
+    s_last_stage = "GPIO";
+    s_last_error = ESP_OK;
     /* RST：输出，默认高电平（正常工作） */
     const gpio_config_t rst_cfg = {
         .pin_bit_mask = 1ULL << BOARD_SI4732_RST_GPIO,
@@ -859,19 +875,42 @@ esp_err_t si4732_init(void)
     };
     ESP_RETURN_ON_ERROR(gpio_config(&gpo_cfg), TAG, "配置 GPO1 引脚失败");
 
-    ESP_RETURN_ON_ERROR(si4732_bus_attach(), TAG, "挂载 I2C 设备失败");
+    s_last_stage = "ATTACH";
+    const esp_err_t attach_err = si4732_bus_attach();
+    if (attach_err != ESP_OK) {
+        s_last_error = attach_err;
+        ESP_LOGE(TAG, "挂载 I2C 设备失败: %s", esp_err_to_name(attach_err));
+        return attach_err;
+    }
 
     /* 复位握手失败不直接放弃：有些模块只有上电后参考时钟才起振，
      * 交给 si4732_power_up() 的时钟模式自动重试处理 */
+    s_last_stage = "RESET";
     const esp_err_t reset_err = si4732_reset();
     if (reset_err != ESP_OK) {
         ESP_LOGW(TAG, "复位握手失败(%s)，继续尝试上电",
                  esp_err_to_name(reset_err));
     }
 
-    ESP_RETURN_ON_ERROR(si4732_power_up(SI4732_BAND_FM), TAG, "上电失败");
-    ESP_RETURN_ON_ERROR(si4732_set_mute(false), TAG, "解除静音失败");
-    ESP_RETURN_ON_ERROR(si4732_set_volume(s_volume), TAG, "设置初始音量失败");
+    s_last_stage = "POWER";
+    esp_err_t err = si4732_power_up(SI4732_BAND_FM);
+    if (err != ESP_OK) {
+        s_last_error = err;
+        return err;
+    }
+
+    s_last_stage = "VOL";
+    err = si4732_set_mute(false);
+    if (err == ESP_OK) {
+        err = si4732_set_volume(s_volume);
+    }
+    if (err != ESP_OK) {
+        s_last_error = err;
+        return err;
+    }
+
+    s_last_stage = "OK";
+    s_last_error = ESP_OK;
 
     uint32_t default_khz = 0;
     si4732_band_info(SI4732_BAND_FM, NULL, NULL, NULL, &default_khz);

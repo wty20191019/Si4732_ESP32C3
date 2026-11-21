@@ -229,6 +229,6 @@ si4732_ssb_disable();           // 回到普通 AM
 | 串口命令没反应 | 命令走 UART0（GPIO20/21），不是 USB |
 | SSB 没声音或啸叫 | 先用 `bfo150`/`bfo-150` 微调；确认在 SW/AM 波段 |
 | SSB 切换后频率偏移 | 补丁模式上电后没有重新写 `REFCLK_FREQ`，检查 RCLK 与 `si4732_patch_power_up()` |
-| OLED 显示 `Si4732 NOT READY` | 串口看具体失败步骤；发 `diag` 看 0x22 是否在线；重点查 SENB 接地、3.3V、上拉、RST |
+| OLED 显示 `Si4732 NOT READY` | 屏幕第二行：`I2C22` 是 0x22 是否在线，`RCLK` 是时钟是否启动；第三行 `ERR 阶段 错误码` 指出卡在哪一步；也可发 `diag` |
 | 日志 `复位后等待 CTS 失败` | I2C 没有应答：SENB 是否接 GND、模块是否供电、地址是否 0x22 |
 | 日志 `等待 CTS 超时` + 自动切换时钟 | 外部 RCLK 没有波形，或模块是晶振版；驱动会两种模式都试一遍 |
