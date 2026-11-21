@@ -67,7 +67,8 @@ typedef struct {
     uint8_t rssi;           /* 信号强度，FM: dBuV，AM: dBuV */
     uint8_t snr;            /* 信噪比，dB */
     bool stereo;            /* FM 立体声导频有效（当前版本暂未解析） */
-    bool valid;             /* 最近一次调谐是否有效 */
+    bool valid;             /* 最近一次调谐是否有效（信号达到门限） */
+    bool tuned;             /* 调谐是否已经完成（STC），与信号强弱无关 */
     bool ssb_active;        /* 是否处于 SSB 模式 */
     bool ssb_usb;           /* true = USB，false = LSB */
     int16_t bfo_hz;         /* 当前 BFO 偏移（Hz） */

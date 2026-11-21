@@ -386,8 +386,12 @@ static void render_status(const si4732_status_t *st, adjust_mode_t mode)
     if (st->ssb_active) {
         snprintf(line, sizeof(line), "BFO %+dHz", (int)st->bfo_hz);
         u8g2_DrawStr(u, 0, 52, line);
+    } else if (!st->tuned) {
+        u8g2_DrawStr(u, 0, 52, "TUNING...");
+    } else if (!st->valid) {
+        u8g2_DrawStr(u, 0, 52, "NO SIGNAL");
     } else {
-        u8g2_DrawStr(u, 0, 52, st->valid ? "SHORT=BAND LONG=MODE" : "TUNING...");
+        u8g2_DrawStr(u, 0, 52, "SHORT=BAND LONG=MODE");
     }
 
     oled_refresh();
@@ -449,14 +453,15 @@ static void console_print_status(void)
                  band_name(st.band), (unsigned long)st.freq_khz,
                  st.ssb_usb ? "USB" : "LSB",
                  (unsigned)st.rssi, (unsigned)st.snr, (unsigned)st.volume,
-                 (int)st.bfo_hz, st.valid ? "LOCK" : "NO LOCK");
+                 (int)st.bfo_hz,
+                 !st.tuned ? "TUNING" : (st.valid ? "LOCK" : "NO SIGNAL"));
     } else {
         ESP_LOGI(TAG, "%s %lu.%03lu MHz  RSSI %u  SNR %u  VOL %u  %s",
                  band_name(st.band),
                  (unsigned long)(st.freq_khz / 1000),
                  (unsigned long)(st.freq_khz % 1000),
                  (unsigned)st.rssi, (unsigned)st.snr, (unsigned)st.volume,
-                 st.valid ? "LOCK" : "NO LOCK");
+                 !st.tuned ? "TUNING" : (st.valid ? "LOCK" : "NO SIGNAL"));
     }
 }
 

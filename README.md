@@ -177,7 +177,8 @@ si4732_ssb_disable();           // 回到普通 AM
 2. `POWER_UP` 参数：FM 用 `FUNC=0`，AM/SW/LW 用 `FUNC=1`，OPMODE=0x05（模拟输出），XOSCEN=0（外部 RCLK）
 3. 上电后设置 `REFCLK_FREQ=32768`、`REFCLK_PRESCALE=1`，否则频率整体偏移
 4. FM 与 AM 模式切换需要重新 `POWER_UP`；MW/SW/LW 之间只改频率
-5. TUNE_STATUS 的 READFREQ：FM 单位 10 kHz，AM 单位 kHz
+5. TUNE_STATUS 的 READFREQ：FM 单位 10 kHz，AM 单位 kHz；**调谐完成看 STATUS 的 STC 位，不看 VALID**
+   （VALID 只表示信号达到搜台门限，没接天线时调谐已完成但 VALID=0）
 6. `FM_TUNE_FREQ` 必须带 4 个参数（最后一个 `ANTCAP=0` 表示自动）；`AM_TUNE_FREQ` / `AM_SEEK_START` 带满 6 字节，ANTCAPL 在短波（>1800 kHz）时置 1
 7. 每次切换波段都会写入 seek 上下限与步进（FM 属性单位 10 kHz），避免 SW/LW 搜台跑回中波范围
 8. 音量与静音分离：`si4732_set_volume()` 只写 RX_VOLUME，静音用 `si4732_set_mute()`

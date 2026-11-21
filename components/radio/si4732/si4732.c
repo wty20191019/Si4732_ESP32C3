@@ -548,25 +548,30 @@ si4732_band_t si4732_get_band(void)
  * 响应格式（AN332）：STATUS, ARG1, READFREQ(2), RSSI, SNR, MULT, ...
  * FM 的 READFREQ 单位是 10kHz，AM 是 kHz。
  */
-static esp_err_t si4732_read_tune_status(bool fm, bool *valid,
-                                         uint8_t *rssi, uint8_t *snr)
+static esp_err_t si4732_read_tune_status(bool fm, bool intack, bool *stc,
+                                         bool *valid, uint8_t *rssi, uint8_t *snr)
 {
     const uint8_t cmd[2] = {
         fm ? CMD_FM_TUNE_STATUS : CMD_AM_TUNE_STATUS,
-        TUNE_STATUS_VALID,          /* ARG1 bit0 = INTACK */
+        (uint8_t)(intack ? 0x01 : 0x00),   /* ARG1 bit0 = INTACK */
     };
     uint8_t resp[7] = {0};
 
     ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), resp, sizeof(resp)),
                         TAG, "读取调谐状态失败");
 
+    /* STATUS 的 bit0 是 STCINT：调谐/搜台完成标志 */
+    if (stc) {
+        *stc = (resp[0] & 0x01) != 0;
+    }
     if (valid) {
-        *valid = (resp[1] & TUNE_STATUS_VALID) != 0;
+        *valid = (resp[1] & TUNE_STATUS_VALID) != 0;   /* VALID = 信号是否有效 */
     }
-    if (resp[1] & TUNE_STATUS_VALID) {
-        uint32_t freq = ((uint32_t)resp[2] << 8) | resp[3];
-        s_freq_khz = fm ? freq * 10 : freq;
-    }
+
+    /* READFREQ 无论 VALID 是否为 1 都是当前实际频率 */
+    const uint32_t freq = ((uint32_t)resp[2] << 8) | resp[3];
+    s_freq_khz = fm ? freq * 10 : freq;
+
     if (rssi) {
         *rssi = resp[4];
     }
@@ -576,21 +581,30 @@ static esp_err_t si4732_read_tune_status(bool fm, bool *valid,
     return ESP_OK;
 }
 
-/* 轮询直到调谐/搜台完成（VALID=1）或超时 */
+/**
+ * @brief 轮询直到调谐/搜台完成（STC=1）或超时
+ *
+ * 注意不能等 VALID：VALID 表示“信号达到搜台有效门限”，
+ * 没接天线或信号弱时调谐已经完成，但 VALID 仍然是 0。
+ */
 static esp_err_t si4732_wait_tune_done(bool fm, uint8_t *rssi, uint8_t *snr)
 {
     const TickType_t start = xTaskGetTickCount();
 
     for (;;) {
+        bool stc = false;
         bool valid = false;
-        ESP_RETURN_ON_ERROR(si4732_read_tune_status(fm, &valid, rssi, snr),
+        ESP_RETURN_ON_ERROR(si4732_read_tune_status(fm, false, &stc, &valid, rssi, snr),
                             TAG, "读取调谐状态失败");
 
-        if (valid) {
+        if (stc) {
+            /* 再读一次并清除 STCINT，拿到最终 RSSI/SNR/VALID */
+            ESP_RETURN_ON_ERROR(si4732_read_tune_status(fm, true, NULL, &valid, rssi, snr),
+                                TAG, "读取调谐状态失败");
             return ESP_OK;
         }
         if ((xTaskGetTickCount() - start) > pdMS_TO_TICKS(SI4732_TUNE_TIMEOUT_MS)) {
-            ESP_LOGW(TAG, "调谐超时");
+            ESP_LOGW(TAG, "调谐超时（STC 未置位）");
             return ESP_ERR_TIMEOUT;
         }
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -887,10 +901,11 @@ esp_err_t si4732_get_status(si4732_status_t *out)
 {
     ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "out 不能为空");
 
+    bool stc = false;
     bool valid = false;
     uint8_t rssi = 0, snr = 0;
-    ESP_RETURN_ON_ERROR(si4732_read_tune_status(si4732_band_is_fm(s_band),
-                                                &valid, &rssi, &snr),
+    ESP_RETURN_ON_ERROR(si4732_read_tune_status(si4732_band_is_fm(s_band), false,
+                                                &stc, &valid, &rssi, &snr),
                         TAG, "读取状态失败");
 
     out->band = s_band;
@@ -900,6 +915,7 @@ esp_err_t si4732_get_status(si4732_status_t *out)
     out->snr = snr;
     out->stereo = false;    /* TODO: 解析 FM_RSQ_STATUS 的 STEREO 位 */
     out->valid = valid;
+    out->tuned = stc;
     out->ssb_active = s_ssb_active;
     out->ssb_usb = s_ssb_usb;
     out->bfo_hz = s_bfo_hz;
