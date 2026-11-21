@@ -555,7 +555,7 @@ static esp_err_t si4732_read_tune_status(bool fm, bool *valid,
         fm ? CMD_FM_TUNE_STATUS : CMD_AM_TUNE_STATUS,
         TUNE_STATUS_VALID,          /* ARG1 bit0 = INTACK */
     };
-    uint8_t resp[8] = {0};
+    uint8_t resp[7] = {0};
 
     ESP_RETURN_ON_ERROR(si4732_exec(cmd, sizeof(cmd), resp, sizeof(resp)),
                         TAG, "读取调谐状态失败");
@@ -620,7 +620,7 @@ esp_err_t si4732_tune(uint32_t freq_khz)
         0x00,                       /* ANTCAPH */
         0x00,                       /* ANTCAPL */
     };
-    size_t cmd_len = 4;
+    size_t cmd_len = 5;     /* FM: CMD + ARG1 + FREQH + FREQL + ANTCAP */
 
     /* AM_TUNE_FREQ 必须带天线调谐电容参数（AN332 与 PU2CLR 库一致）：
      * 短波（>1800kHz）给 ANTCAPL=1，其余为 0（自动选择） */
