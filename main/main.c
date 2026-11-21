@@ -27,8 +27,8 @@ static const char *TAG = "app";
 
 /* ============================ 可调参数 ============================ */
 #define UI_TASK_PERIOD_MS       20      /* UI 任务轮询周期 */
-#define UI_REDRAW_MS            50      /* 目标刷新间隔（受 I2C 带宽限制） */
-#define RADIO_POLL_MS           50      /* 状态轮询周期 */
+#define UI_REDRAW_MS            1000    /* 无变化时每秒兜底重绘（有变化立即重绘） */
+#define RADIO_POLL_MS           1000    /* 状态轮询周期：RSSI/SNR 每秒刷新 */
 #define SETTINGS_SAVE_DELAY_MS  2000
 #define LED_BLINK_PERIOD_MS     5000   // 每 5 秒闪一次
 #define LED_ON_MS               500    // 每次亮 0.5 秒
@@ -768,6 +768,10 @@ static void render_ui(const si4732_status_t *st)
     char value[20];
     char line[28];
 
+    /* 数字保持两位，避免 3 位数把右侧电平条挤出屏幕 */
+    const unsigned rssi_txt = (st->rssi > 99) ? 99 : st->rssi;
+    const unsigned snr_txt = (st->snr > 99) ? 99 : st->snr;
+
     /* ---------- 上区：大字频率 ---------- */
     u8g2_SetFont(u, u8g2_font_10x20_tf);
     format_freq_value(value, sizeof(value), st);
@@ -808,25 +812,24 @@ static void render_ui(const si4732_status_t *st)
         snprintf(line, sizeof(line), "%s %s  EDIT %s",
                  band_name(st->band), ssb_name(), field_name(s_field));
     } else if (st->band == SI4732_BAND_FM) {
-        snprintf(line, sizeof(line), "%s %s%s",
+        snprintf(line, sizeof(line), "%s %s%s  R%u S%u",
                  band_name(st->band), ssb_name(),
-                 s_muted ? " M" : "");
+                 s_muted ? " M" : "",
+                 rssi_txt, snr_txt);
     } else {
         /* AM/SW/LW 显示补丁状态：P:OK = 补丁在跑，P:0 = 未加载/丢失 */
-        snprintf(line, sizeof(line), "%s %s P:%s%s",
+        snprintf(line, sizeof(line), "%s %s P:%s%s R%u S%u",
                  band_name(st->band), ssb_name(),
                  (si4732_get_patch_id() != 0) ? "OK" : "0",
-                 s_muted ? " M" : "");
+                 s_muted ? " M" : "",
+                 rssi_txt, snr_txt);
     }
     u8g2_DrawStr(u, 0, 31, line);
 
-    /* 右侧 R/S 电平条：每条宽 2px，高 1~12px，底边贴分隔线 y=33 */
-    draw_level_bar(u, 116, 33, st->rssi, 63);
+    /* 右侧 R/S 电平条：每条宽 2px，高 1~12px，底边贴分隔线 y=33；
+     * 左侧数字 R/S 已经标明顺序，这里不再重复画标签 */
+    draw_level_bar(u, 122, 33, st->rssi, 63);
     draw_level_bar(u, 126, 33, st->snr, 30);
-    u8g2_SetFont(u, u8g2_font_4x6_tf);
-    u8g2_DrawStr(u, 111, 32, "R");
-    u8g2_DrawStr(u, 121, 32, "S");
-    u8g2_SetFont(u, u8g2_font_6x10_tf);
 
     u8g2_DrawHLine(u, 0, 34, OLED_WIDTH);
 
